@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+
+  <defs>
+    <linearGradient id="grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#B56CFF"/>
+      <stop offset="100%" stop-color="#6D28FF"/>
+    </linearGradient>
+  </defs>
+
+  <!-- círculo base -->
+  <circle cx="256" cy="256" r="220" fill="#111827"/>
+
+  <!-- P -->
+  <path fill="url(#grad)"
+        d="
+        M170 110
+        H285
+        C360 110 415 165 415 235
+        C415 305 360 360 285 360
+        H250
+        V300
+        H285
+        C326 300 355 272 355 235
+        C355 198 326 170 285 170
+        H230
+        V390
+        L170 440
+        Z"/>
+
+  <!-- Play -->
+  <polygon points="245,195 325,240 245,285"
+           fill="#E9D5FF"/>
+
+  <!-- Gancho -->
+  <path fill="#F3F4F6"
+        d="
+        M255 355
+        C300 320 355 325 385 370
+        C415 415 390 465 335 480
+        C305 488 282 470 282 444
+        C282 422 299 407 321 407
+        C349 407 363 382 350 360
+        C337 338 304 337 275 360
+        Z"/>
+
+</svg>
