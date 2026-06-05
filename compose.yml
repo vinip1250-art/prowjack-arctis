@@ -12,7 +12,7 @@ services:
       - ./.env
     environment:
       - PORT=7014
-      - ADDON_PUBLIC_URL=https://prowjack.004123.xyz
+      - ADDON_PUBLIC_URL=
     volumes:
       - /media/vinicius/Arquivos:/data             # ← compartilhado com qBittorrent
 
