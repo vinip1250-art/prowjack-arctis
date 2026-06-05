@@ -1,8 +1,8 @@
-# 🎬 ProwJack PRO
+# 🎬 ProwJack
 
-**Addon Stremio v3.12 otimizado para Jackett/Prowlarr com suporte a Debrid, StremThru, P2P e qBittorrent HTTP**
+**Addon Stremio v3.2.0 otimizado para Jackett/Prowlarr com suporte a Debrid, StremThru, P2P e qBittorrent HTTP**
 
-ProwJack PRO é um addon avançado para Stremio que integra indexadores Jackett/Prowlarr com serviços Debrid (Real-Debrid, TorBox), StremThru, P2P nativo e qBittorrent HTTP opcional, oferecendo streaming de alta qualidade com priorização inteligente de idioma PT-BR.
+ProwJack é um addon avançado para Stremio que integra indexadores Jackett/Prowlarr com serviços Debrid (Real-Debrid, TorBox), StremThru, P2P nativo e qBittorrent HTTP opcional, oferecendo streaming de alta qualidade com priorização inteligente de idioma PT-BR.
 
 ---
 
@@ -16,6 +16,9 @@ ProwJack PRO é um addon avançado para Stremio que integra indexadores Jackett/
 - **qBittorrent HTTP**: Streaming direto de torrents via HTTP em instâncias auto-hospedadas
 - **Priorização PT-BR**: Sistema inteligente de ranking por idioma
 - **Cache Distribuído**: Redis + fallback em memória
+- **Configuração persistente opcional**: arquivo local em VPS/Docker ou Postgres em Vercel/serverless
+- **Scrap de manifests externos**: integra streams de addons em `SCRAP_MANIFEST_URLS` e limpa rótulos P2P quando Debrid nativo está ativo
+- **Filtro de disponibilidade**: remove candidatos sem seeds quando não há cache confirmado em Debrid/StremThru
 - **Anime Support**: Detecção automática e indexadores especializados
 
 ### 🔍 Busca Inteligente
@@ -27,7 +30,7 @@ ProwJack PRO é um addon avançado para Stremio que integra indexadores Jackett/
 
 ### 🚀 Performance
 - **Busca Paralela**: Consulta múltiplos indexadores simultaneamente
-- **Cache Inteligente**: 30min para resultados, 30min para rate limits
+- **Cache Inteligente**: busca e streams em Redis com escopo por origem/configuração para evitar mistura entre instalações
 - **Background Polling**: Continua buscas lentas em segundo plano
 - **Rate Limit**: Proteção automática contra sobrecarga
 
@@ -39,12 +42,13 @@ ProwJack PRO é um addon avançado para Stremio que integra indexadores Jackett/
 - **Input Validation**: Sanitização de todos os parâmetros
 - **Buffer Overflow Protection**: Validação de tamanho de buffers
 - **Configuração opaca**: URLs novas usam `cfg_...` salvo no backend, evitando chaves Debrid/qBit diretamente na URL
+- **Escopo de credenciais**: caches de busca e travas de add não compartilham resultados entre contas diferentes
 
 ---
 
 ## 📡 Catálogo RSS
 
-O ProwJack PRO inclui um sistema de catálogo automático baseado no feed RSS dos indexers configurados no **Prowlarr/Jackett**. Isso permite visualizar lançamentos recentes diretamente no Stremio, sem precisar buscar manualmente.
+O ProwJack inclui um sistema de catálogo automático baseado no feed RSS dos indexers configurados no **Prowlarr/Jackett**. Isso permite visualizar lançamentos recentes diretamente no Stremio, sem precisar buscar manualmente.
 
 ### Como funciona
 
@@ -62,6 +66,8 @@ O ProwJack PRO inclui um sistema de catálogo automático baseado no feed RSS do
 - Processo Node persistente. Em plataformas serverless como Vercel, o poller em memória/setInterval não é confiável; use VPS/Docker ou um worker/cron externo para alimentar o Redis.
 
 > **Importante sobre Vercel/serverless:** Redis configurado não basta para o catálogo RSS funcionar. O Redis só armazena os dados; quem popula esses dados é o poller RSS (`startRssPoller`) rodando em processo persistente. Em Vercel, a função pode ser encerrada antes do intervalo rodar ou não ficar viva para manter o catálogo atualizado. Streams sob demanda funcionam melhor em serverless; catálogo RSS exige VPS/Docker ou um job externo chamando uma rotina de polling.
+
+> **Configurações no Vercel:** URLs novas usam `cfg_...` salvo no backend. Em VPS/Docker, isso continua indo para `CONFIG_DATA_DIR/prowjack_configs.json`. Em Vercel/serverless, configure `CONFIG_DATABASE_URL` (ou `POSTGRES_URL`/`DATABASE_URL`) com um Postgres do Marketplace para as configurações sobreviverem a cold starts e redeploys.
 
 ### Configuração
 
@@ -99,6 +105,9 @@ Na UI de configuração, a seleção de indexers também limita o que aparece no
 | `rss:catalog:movie` | Catálogo de filmes (metadados Cinemeta) | 6h |
 | `rss:catalog:series` | Catálogo de séries (metadados Cinemeta) | 6h |
 | `torrent:{hash}` | Buffer do arquivo `.torrent` | 7 dias |
+| `search:v12-native-debrid:{escopo}` | Resultados brutos de busca separados por origem/API key/indexers | 3h |
+| `streams:v21-cache-scope-seed-filter:{config}:{type}:{id}` | Streams finais separados por configuração instalada | 3h |
+| `addlock:{provider}:{conta}:{hash}` | Trava temporária de add separada por conta Debrid | 1h |
 
 Para limpar o catálogo manualmente:
 ```bash
@@ -170,6 +179,13 @@ ACCESS_TOKEN=
 
 # Redis (Recomendado)
 REDIS_URL=redis://localhost:6379
+
+# Persistência das configurações cfg_...
+# VPS/Docker sem banco: usa CONFIG_DATA_DIR/prowjack_configs.json
+# Vercel/serverless: use uma URL Postgres do Marketplace
+CONFIG_DATABASE_URL=
+CONFIG_DATABASE_TABLE=prowjack_configs
+CONFIG_DATA_DIR=/data
 
 # Real-Debrid / TorBox (Opcional - configurado via interface)
 STREMTHRU_URL=https://st.omcx.ddns.net/v0/torznab/api
@@ -459,6 +475,13 @@ Contribuições são bem-vindas! Por favor:
 ---
 
 ## 📝 Changelog
+
+### v3.2.0 (2026-06-05)
+- **Persistência opcional em Postgres**: `cfg_...` pode ser salvo em `CONFIG_DATABASE_URL`, `POSTGRES_URL` ou `DATABASE_URL`, útil para Vercel/serverless sem volume persistente
+- **Fallback em arquivo preservado**: sem banco configurado, o VPS/Docker continua usando `CONFIG_DATA_DIR/prowjack_configs.json`
+- **Scrap mais limpo em Debrid nativo**: streams vindos de `SCRAP_MANIFEST_URLS` têm rótulos como `[TORRENT 🧲]`, `P2P`, `Torrentio` e `Comet` removidos do nome exibido
+- **Filtro por disponibilidade**: candidatos sem seeds são removidos quando não têm cache confirmado no modo Debrid/StremThru
+- **Cache Redis revisado**: cache de busca inclui escopo da origem/API key, cache de stream segue isolado por configuração e a trava de `debrid-add` agora é separada por conta
 
 ### v3.12.0 (2026-05-01)
 - ✨ **Configuração segura**: URLs de instalação novas usam `cfg_...` salvo no backend; chaves Debrid/qBit deixam de ir diretamente na URL

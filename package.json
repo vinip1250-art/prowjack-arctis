@@ -1,18 +1,19 @@
 {
   "name": "prowjack",
-  "version": "3.13.0",
+  "version": "3.2.0",
   "description": "Qbittorrent+Prowlarr/Jackett+Debrid+Filtros por keywords e remendo para RD",
   "main": "addon.js",
   "scripts": {
     "start": "node addon.js",
-    "dev":   "nodemon addon.js"
+    "dev": "nodemon addon.js"
   },
   "dependencies": {
     "axios": "^1.7.0",
     "express": "^4.19.0",
     "form-data": "^4.0.0",
     "ioredis": "^5.3.0",
-    "node-fetch": "^2.7.0"
+    "node-fetch": "^2.7.0",
+    "pg": "^8.21.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"
