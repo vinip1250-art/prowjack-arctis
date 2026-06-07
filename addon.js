@@ -3030,12 +3030,19 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
       }
     }
 
-    // Busca scrap sempre (independente de catalog ou busca normal)
-    const scrapResults = ENV.scrapManifests.length
+    // Busca scrap sempre, exceto no modo ST (que já busca via proxyManifest)
+    const scrapResults = !prefs.stConfig && ENV.scrapManifests.length
       ? await Promise.all(ENV.scrapManifests.map(async (m, idx) => {
           const streams = await fetchScrapStreams(m, type, id, { prefs });
           console.log(`[SCRAP ${idx}] ${m.slice(0, 60)}... → ${streams.length} streams`);
-          return streams;
+          let scrapName = "Scrap Externo";
+          try {
+            const host = new URL(m).hostname;
+            const parts = host.split('.');
+            let rawName = parts.length >= 2 ? (parts[0] === 'www' || parts[0] === 'api' ? parts[1] : parts[0]) : host;
+            scrapName = rawName.charAt(0).toUpperCase() + rawName.slice(1);
+          } catch {}
+          return streams.map(s => ({ ...s, _scrapName: scrapName }));
         }))
       : [];
 
@@ -3071,10 +3078,10 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
         Seeders: s._seeders || 0,
         _scrapStream: s,
         _scrapSource: true,
-        _indexerName: 'Scrap',
-        Tracker: 'Scrap',
+        _indexerName: s._scrapName || 'Scrap Externo',
+        Tracker: s._scrapName || 'Scrap Externo',
         TrackerId: 'scrap',
-        Indexer: 'Scrap'
+        Indexer: s._scrapName || 'Scrap Externo'
       };
     });
     
@@ -3374,14 +3381,9 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
           const resolved     = r._resolved;
           const indexerName  = r._indexerName || r.Tracker || r.TrackerId || r.Indexer || "Unknown";
           const rdExcluded   = isRdExcludedResult(r, prefs, indexerName);
-          // Scrap com infoHash: usa name/description originais do stream (já formatados pelo addon externo)
-          const isScrap = !!(r._scrapSource && r._scrapStream);
-          const { name, description: descNoSeeds, resLabel } = isScrap
-            ? { name: r._scrapStream.name || "", description: r._scrapStream.description || "", resLabel: "" }
-            : formatStream(r, indexerName, parsed.isAnime, prefs, false, streamMeta);
-          const { description } = isScrap
-            ? { description: r._scrapStream.description || "" }
-            : formatStream(r, indexerName, parsed.isAnime, prefs, true, streamMeta);
+          // Scrap com infoHash: formata usando a formatação nativa do addon (Scrap Externo)
+          const { name, description: descNoSeeds, resLabel } = formatStream(r, indexerName, parsed.isAnime, prefs, false, streamMeta);
+          const { description } = formatStream(r, indexerName, parsed.isAnime, prefs, true, streamMeta);
           const matchedFile  = (type === "series" || parsed.isAnime)
             ? pickEpisodeFile(resolved.files, parsed.season, parsed.episode ?? episode, parsed.isAnime)
             : null;
@@ -3396,7 +3398,8 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
                 .sort((a, b) => (b.size || 0) - (a.size || 0))[0]
               || resolved.files.slice().sort((a, b) => (b.size || 0) - (a.size || 0))[0]
             : null);
-          const displayFileName = displayFile?.name || r.Title || "";
+          const fallbackTitle = (r.Title && !r.Title.includes('\n')) ? r.Title : "";
+          const displayFileName = displayFile?.name || r._scrapStream?._filename || fallbackTitle;
           const filenameLine = displayFileName ? `📂 ${displayFileName}` : "";
           // Descarta streams cujo arquivo selecionado não é reproduzível (iso, rar, zip, etc.)
           if (displayFile?.name && BAD_EXT_RE.test(displayFile.name)) return null;
