@@ -2154,7 +2154,8 @@ app.get("/:userConfig/manifest.json", async (req, res) => {
 
   const enabledCats = Array.isArray(prefs.categories) && prefs.categories.length ? prefs.categories : ["movie", "series"];
   const catalogs = [];
-  if (prefs.enableCatalog) {
+  const catalogFilter = (process.env.RSS_CATALOG_INDEXERS || "").trim();
+  if (prefs.enableCatalog && catalogFilter.length > 0) {
     if (enabledCats.includes("movie"))  catalogs.push({ type: "movie",  id: "prowjack_rss_movie",  name: `${name} — Lançamentos` });
     if (enabledCats.includes("series")) catalogs.push({ type: "series", id: "prowjack_rss_series", name: `${name} — Lançamentos` });
   }
@@ -3824,6 +3825,14 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
       const topFinal = finalStreams.slice(0, Math.min(5, finalStreams.length))
         .map(s => `${(s.name || "").split("\n")[0]} => ${(s.behaviorHints?.filename || s.title || s.description || "").slice(0, 60)}`);
       console.log(`[FINAL] top${topFinal.length}: ${topFinal.join(" | ")}`);
+    }
+
+    if (req.hostname && req.hostname.includes("vercel")) {
+      finalStreams.unshift({
+        name: "⚠️ MIGRAR HOSPEDAGEM",
+        description: "A hospedagem Vercel foi descontinuada.\nClique aqui para configurar o ProwJack na nova hospedagem do Hugging Face.",
+        externalUrl: "https://huggingface.co/spaces/seu-usuario/prowjack",
+      });
     }
     if (isDebridMode) {
       const cached = finalStreams.filter(s => s.externalUrl || (s.url && !s.url.includes('/debrid-add/'))).length;
