@@ -2130,11 +2130,9 @@ app.get("/api/metrics", async (_, res) => {
 app.delete("/api/metrics/:indexer", async (req, res) => {
   await rc.del(`metrics:${req.params.indexer}`); res.json({ ok: true });
 });
-app.get("/manifest.json", (req, res) => {
+app.get("/manifest.json", (_, res) => {
   res.json({
     id: "org.prowjack.pro", version: "3.2.1", name: "ProwJack",
-    logo: `${getPublicBase(req)}/logo.svg`,
-    icon: `${getPublicBase(req)}/logo.svg`,
     description: "Qbittorrent+Prowlarr/Jackett+Debrid+Filtros por keywords e remendo para RD",
     resources: ["stream", "meta"], types: ["movie", "series"],
     idPrefixes: ["tt", "kitsu:", "rssmovie:", "rssmeta:", "rssitem:"],
@@ -2180,8 +2178,6 @@ app.get("/:userConfig/manifest.json", async (req, res) => {
 
   res.json({
     id: "org.prowjack.pro", version: "3.2.1", name,
-    logo: `${getPublicBase(req)}/logo.svg`,
-    icon: `${getPublicBase(req)}/logo.svg`,
     description: "Qbittorrent+Prowlarr/Jackett+Debrid+Filtros por keywords e remendo para RD",
     resources: [
       "catalog",
@@ -2468,7 +2464,7 @@ app.get("/:userConfig/debrid-add/:provider/:infoHash", async (req, res) => {
     try {
       if (isTB) {
         const { torboxAddTorrent } = require("./debrid");
-        const tbResult = await torboxAddTorrent(magnet, config.torboxKey, false, torrentBuffer, { infoHash });
+        const tbResult = await torboxAddTorrent(magnet, config.torboxKey, false, torrentBuffer, { addOnlyIfCached: cachedHint });
         if (!tbResult) {
           console.log(`[ON-DEMAND] Falha ao adicionar ao TorBox (pode já estar na fila ou erro de API)`);
         } else {
@@ -2477,7 +2473,7 @@ app.get("/:userConfig/debrid-add/:provider/:infoHash", async (req, res) => {
           const isReady = tbResult.download_finished === true
             || tbResult.download_present === true
             || tbResult.download_state === "cached";
-          if (isReady && tbResult.files?.length > 0) {
+          if (isReady && tbResult.files?.length) {
             if (requestedFileId) {
               const tid = tbResult.id || tbResult.torrent_id;
               const url = `https://api.torbox.app/v1/api/torrents/requestdl?token=${config.torboxKey}&torrent_id=${tid}&file_id=${encodeURIComponent(requestedFileId)}&redirect=true`;
@@ -2530,7 +2526,7 @@ app.get("/:userConfig/debrid-add/:provider/:infoHash", async (req, res) => {
           t.hash?.toLowerCase() === infoHash.toLowerCase()
         );
 
-        if ((torrent?.download_present === true || torrent?.download_finished === true || torrent?.download_state === "cached") && torrent?.files?.length > 0) {
+        if (torrent?.download_finished || torrent?.download_state === "cached") {
           console.log(`[ON-DEMAND] TorBox pronto! Resolvendo stream...`);
           if (requestedFileId) {
             const tid = torrent.id || torrent.torrent_id;
