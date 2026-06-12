@@ -117,7 +117,8 @@ function parseRssItems(xml, indexerId, indexerName) {
     const magnetUri = attrs.magneturl || null;
     const link      = magnetUri || tag("link") || enc?.[1] || null;
     const size      = attrs.size ? parseInt(attrs.size, 10) : (enc?.[2] ? parseInt(enc[2], 10) : 0);
-    const seedersRaw = attrs.seeders != null ? parseInt(attrs.seeders, 10) : null;
+    const seedersParsed = attrs.seeders != null ? parseInt(attrs.seeders, 10) : null;
+    const seedersRaw = Number.isFinite(seedersParsed) ? seedersParsed : null;
 
     const title = tag("title") || "";
     if (!title || (!link && !magnetUri)) return null;
@@ -143,7 +144,7 @@ function parseRssItems(xml, indexerId, indexerName) {
       Link:        link,
       MagnetUri:   magnetUri,
       Size:        Number.isFinite(size) ? size : 0,
-      Seeders:     seedersRaw ?? 1,
+      Seeders:     seedersRaw ?? 0,
       _displaySeeds: seedersRaw ?? 0,
       InfoHash:    (attrs.infohash && /^[a-f0-9]{40}$/i.test(attrs.infohash))
         ? attrs.infohash.toLowerCase()
