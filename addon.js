@@ -3827,13 +3827,6 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
       console.log(`[FINAL] top${topFinal.length}: ${topFinal.join(" | ")}`);
     }
 
-    if (req.hostname && req.hostname.includes("vercel")) {
-      finalStreams.unshift({
-        name: "⚠️ MIGRAR HOSPEDAGEM",
-        description: "A hospedagem Vercel foi descontinuada.\nClique aqui para configurar o ProwJack na nova hospedagem do Hugging Face.",
-        externalUrl: "https://huggingface.co/spaces/seu-usuario/prowjack",
-      });
-    }
     if (isDebridMode) {
       const cached = finalStreams.filter(s => s.externalUrl || (s.url && !s.url.includes('/debrid-add/'))).length;
       const queued = finalStreams.filter(s => s.url &&  s.url.includes('/debrid-add/')).length;
