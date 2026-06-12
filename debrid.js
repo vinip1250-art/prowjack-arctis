@@ -312,7 +312,6 @@ async function torboxAddTorrent(magnet, key, waitForReady = false, buffer = null
     // Configurações padrão
     form.append('seed', '1');
     form.append('allow_zip', 'false');
-    if (options.addOnlyIfCached) form.append('add_only_if_cached', 'true');
 
     const res = await axios.post(
       "https://api.torbox.app/v1/api/torrents/createtorrent",
@@ -335,7 +334,7 @@ async function torboxAddTorrent(magnet, key, waitForReady = false, buffer = null
     const detail = res.data?.detail || "";
     if (detail.includes("exists") || detail.includes("already") || detail.includes("duplicate")) {
        // Valida formato do infoHash antes de usar
-       const rawHash = magnet?.match(/btih:([a-f0-9]{40})/i)?.[1];
+       const rawHash = magnet?.match(/btih:([a-f0-9]{40})/i)?.[1] || options.infoHash;
        const infoHash = rawHash && /^[a-f0-9]{40}$/i.test(rawHash) ? rawHash : null;
        if (infoHash) {
          const myTorrents = await axios.get("https://api.torbox.app/v1/api/torrents/mylist", {
@@ -347,10 +346,19 @@ async function torboxAddTorrent(magnet, key, waitForReady = false, buffer = null
        }
     }
 
+    if (buffer && magnet && !options.isFallback) {
+      console.log(`[TorBox] Upload de arquivo falhou, tentando fallback com magnet...`);
+      return torboxAddTorrent(magnet, key, waitForReady, null, { ...options, isFallback: true });
+    }
+
     console.error(`[TorBox] Erro ao adicionar torrent: ${JSON.stringify(res.data)}`);
     return null;
   } catch (err) {
     console.error(`[TorBox] Exception ao adicionar torrent: ${err.message}`);
+    if (buffer && magnet && !options.isFallback) {
+      console.log(`[TorBox] Exception no upload de arquivo, tentando fallback com magnet...`);
+      return torboxAddTorrent(magnet, key, waitForReady, null, { ...options, isFallback: true });
+    }
     return null;
   }
 }
