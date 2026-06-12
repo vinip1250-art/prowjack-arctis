@@ -2130,9 +2130,10 @@ app.get("/api/metrics", async (_, res) => {
 app.delete("/api/metrics/:indexer", async (req, res) => {
   await rc.del(`metrics:${req.params.indexer}`); res.json({ ok: true });
 });
-app.get("/manifest.json", (_, res) => {
+app.get("/manifest.json", (req, res) => {
   res.json({
     id: "org.prowjack.pro", version: "3.2.1", name: "ProwJack",
+    logo: `${getPublicBase(req)}/logo.svg`,
     description: "Qbittorrent+Prowlarr/Jackett+Debrid+Filtros por keywords e remendo para RD",
     resources: ["stream", "meta"], types: ["movie", "series"],
     idPrefixes: ["tt", "kitsu:", "rssmovie:", "rssmeta:", "rssitem:"],
@@ -2178,6 +2179,7 @@ app.get("/:userConfig/manifest.json", async (req, res) => {
 
   res.json({
     id: "org.prowjack.pro", version: "3.2.1", name,
+    logo: `${getPublicBase(req)}/logo.svg`,
     description: "Qbittorrent+Prowlarr/Jackett+Debrid+Filtros por keywords e remendo para RD",
     resources: [
       "catalog",
