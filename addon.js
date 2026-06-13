@@ -2167,10 +2167,10 @@ app.delete("/api/metrics/:indexer", async (req, res) => {
 });
 app.get("/manifest.json", (req, res) => {
   res.json({
-    id: "org.prowjack.pro", version: "3.2.1", name: "ProwJack",
+    id: "org.prowjack.pro", version: "3.2.2", name: "ProwJack",
     logo: `${getPublicBase(req)}/logo.svg`,
     icon: `${getPublicBase(req)}/logo.svg`,
-    description: "Qbittorrent+Prowlarr/Jackett+Debrid+Filtros por keywords e remendo para RD",
+    description: "Qbittorrent+Prowlarr/Jackett+Debrid+Filtros por keywords",
     resources: ["stream", "meta"], types: ["movie", "series"],
     idPrefixes: ["tt", "kitsu:", "rssmovie:", "rssmeta:", "rssitem:"],
     catalogs: [], behaviorHints: { configurable: true, configurationRequired: true, p2p: true },
@@ -2214,10 +2214,10 @@ app.get("/:userConfig/manifest.json", async (req, res) => {
   }
 
   res.json({
-    id: "org.prowjack.pro", version: "3.2.1", name,
+    id: "org.prowjack.pro", version: "3.2.2", name,
     logo: `${getPublicBase(req)}/logo.svg`,
     icon: `${getPublicBase(req)}/logo.svg`,
-    description: "Qbittorrent+Prowlarr/Jackett+Debrid+Filtros por keywords e remendo para RD",
+    description: "Qbittorrent+Prowlarr/Jackett+Debrid+Filtros por keywords",
     resources: [
       "catalog",
       { name: "meta",   types, idPrefixes: ["rssmovie:", "rssmeta:", "prowjack:", "rssitem:"] },
@@ -3995,7 +3995,7 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
 });
 
 app.listen(ENV.port, () => {
-  console.log(`ProwJack v3.2.1 -> http://localhost:${ENV.port}/configure`);
+  console.log(`ProwJack v3.2.2 -> http://localhost:${ENV.port}/configure`);
   console.log(`   Jackett : ${ENV.jackettUrl}`);
   console.log(`   Redis   : ${ENV.redisUrl}`);
   console.log(`   qBittorrent: ${isQbitConfigured() ? "ativo" : "desativado"}`);
