@@ -1465,27 +1465,15 @@ function visibleSeedCount(result) {
 
 function matchesKeywordBoost(title, boostFilter) {
   if (!boostFilter || !boostFilter.trim()) return false;
-  const hay = String(title || "").slice(0, 800);
-  const terms = String(boostFilter || "")
-    .split(/[\n,;|]+/)
-    .map(s => s.trim())
-    .filter(Boolean)
-    .slice(0, 50);
-  if (!terms.length) return false;
-
-  for (const term of terms) {
-    if (term.length > 120) continue;
-    try {
-      const regex = new RegExp(term, "i");
-      const start = Date.now();
-      const result = regex.test(hay);
-      if (Date.now() - start > 100) { console.warn(`[SECURITY] Regex timeout: ${term}`); continue; }
-      if (result) return true;
-    } catch {
-      if (hay.toLowerCase().includes(term.toLowerCase())) return true;
-    }
-  }
-  return false;
+  const pattern = boostFilter.trim();
+  if (pattern.length > 500) return false;
+  try {
+    const regex = new RegExp(pattern, "i");
+    const start = Date.now();
+    const result = regex.test(String(title || "").slice(0, 500));
+    if (Date.now() - start > 100) { console.warn(`[SECURITY] Regex timeout: ${pattern}`); return false; }
+    return result;
+  } catch { return false; }
 }
 
 function splitFilterTerms(value) {
@@ -3252,14 +3240,6 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
             return true;
           })
           .filter(r => {
-            // Apenas Idioma: Deve ser avaliado primeiro, como regra absoluta
-            if (prefs.onlyDubbed && priorityLang) {
-              const langs   = getLangs(r.Title || "", parsed.isAnime);
-              const isMulti = /(multi|dual)[-.\\s]?(audio)?/i.test(r.Title || "");
-              const hasLang = langs.some(l => l.code === priorityLang) || isMulti;
-              if (!hasLang) return false;
-            }
-
             if (r._priorityIndexer) {
               r._titleMatchScore = Math.max(r._titleMatchScore || 0, 1);
               return true;
@@ -3267,7 +3247,10 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
             if (prefs.keywordBoost && matchesKeywordBoost(r.Title || "", prefs.keywordBoost)) {
               r._titleMatchScore = 1; r._keywordMatch = true; return true;
             }
-            return true;
+            if (!prefs.onlyDubbed || !priorityLang) return true;
+            const langs   = getLangs(r.Title || "", parsed.isAnime);
+            const hasLang = priorityLang ? langs.some(l => l.code === priorityLang) : false;
+            return hasLang;
           })
           .filter(r => {
             if (r._priorityIndexer) return true;
