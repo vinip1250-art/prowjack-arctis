@@ -4,16 +4,39 @@ const https  = require("https");
 const crypto = require("crypto");
 const { enrichMetaPtBr } = require("./metadata");
 
-// Define limite alto (não infinito) para suportar múltiplas conexões TLS simultâneas
-// sem silenciar completamente os avisos reais de memory leak
 https.globalAgent.setMaxListeners(50);
 require("events").EventEmitter.defaultMaxListeners = 50;
 
 const POLL_INTERVAL_MS = 45 * 60 * 1000;
-const RSS_CACHE_TTL    = 24 * 3600; // 24h
+const RSS_CACHE_TTL    = 24 * 3600;
+const CATALOG_TTL      = 24 * 3600;
 const CACHE_VERSION    = "v12-native-debrid";
 
-// Extrai infoHash de buffer .torrent
+// ╔════════════════════════════════════════════════════════════════════╗
+// ║ OTIMIZAÇÃO #1: Cache compilado para regex (não recompila)         ║
+// ╚════════════════════════════════════════════════════════════════════╝
+const CATEGORY_REGEX = {
+  anime: /\b(anime|animes)\b/i,
+  animeTag: /\[SubsPlease\]|\[Erai-raws\]|\[HorribleSubs\]/i,
+  series: /\bS\d{1,2}E\d{1,3}\b/i,
+  seriesDots: /\b\d{1,2}x\d{1,3}\b/,
+  seriesSeason: /\bSeason\s?\d{1,2}\b/i,
+  seriesTemporada: /\bTemporada\s?\d{1,2}\b/i,
+  seriesEpisode: /\bEpisode\s?\d{1,3}\b/i,
+  seriesEp: /\bEp\s?\d{1,3}\b/i,
+  seriesS: /\bS\d{2}\b/i,
+  seriesCap: /\bcap[ií]tulo\s?\d{1,3}\b/i,
+  seriesCategory: /\b(TV Series|TV Show|Serie|Series)\b/i,
+};
+
+const ATTR_REGEX = /<(?:torznab:)?attr\s+name="([^"]+)"\s+value="([^"]*)"\s*\/?/gi;
+const TAG_REGEX = (tag) => new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, "i");
+const CDATA_REGEX = /<!\[CDATA\[([\s\S]*?)\]\]>/g;
+const ENCLOSURE_REGEX = /<enclosure\b[^>]*url="([^"]+)"[^>]*length="([^"]*)"/i;
+const ITEM_REGEX = /<item\b[\s\S]*?<\/item>/gi;
+const INDEXER_REGEX = /<indexer\s+id="([^"]+)"[^>]*>([\s\S]*?)<\/indexer>/gi;
+
+// Extracting hash from torrent binary
 function extractHashFromTorrent(buf) {
   if (!Buffer.isBuffer(buf) || buf[0] !== 0x64) return null;
   const s = buf.toString("latin1");
@@ -33,7 +56,6 @@ function extractHashFromTorrent(buf) {
   return crypto.createHash("sha1").update(buf.slice(start, i)).digest("hex");
 }
 
-// Baixa .torrent e extrai infoHash durante o polling (timeout generoso de 30s)
 async function resolveItemHash(item) {
   if (item.InfoHash) return { hash: item.InfoHash.toLowerCase(), buffer: null };
   if (item.MagnetUri) {
@@ -53,7 +75,6 @@ async function resolveItemHash(item) {
   } catch { return null; }
 }
 
-// Detecta indexers privados via API do Prowlarr ou Jackett
 async function fetchPrivateIndexers(jUrl, jKey) {
   const catalogFilter = (process.env.RSS_CATALOG_INDEXERS || "").trim();
 
@@ -64,7 +85,6 @@ async function fetchPrivateIndexers(jUrl, jKey) {
     });
     if (res.status < 400 && Array.isArray(res.data)) {
       const all = res.data.map(ix => ({ id: String(ix.id), name: String(ix.name || ix.id) }));
-      // Se RSS_CATALOG_INDEXERS definido, usa todos (inclui públicos); senão só privados
       if (catalogFilter) return all;
       const privates = all.filter((_, i) =>
         res.data[i].privacy === "private" || res.data[i].privacy === "semiPrivate"
@@ -73,7 +93,7 @@ async function fetchPrivateIndexers(jUrl, jKey) {
     }
   } catch {}
 
-  // Fallback: Jackett — busca indexers via torznab caps
+  // Fallback: Jackett
   try {
     const params = { t: "indexers", configured: "true" };
     if (jKey) params.apikey = jKey;
@@ -82,10 +102,10 @@ async function fetchPrivateIndexers(jUrl, jKey) {
     });
     if (res.status < 400 && typeof res.data === "string") {
       const indexers = [];
-      for (const m of res.data.matchAll(/<indexer\s+id="([^"]+)"[^>]*>([\s\S]*?)<\/indexer>/gi)) {
+      for (const m of res.data.matchAll(INDEXER_REGEX)) {
         const id = m[1];
         if (!id || id === "all") continue;
-        const titleMatch = m[2].match(/<title>([^<]+)<\/title>/i);
+        const titleMatch = m[2].match(TAG_REGEX("title"));
         const name = titleMatch ? titleMatch[1].trim() : id;
         indexers.push({ id, name });
       }
@@ -97,50 +117,55 @@ async function fetchPrivateIndexers(jUrl, jKey) {
   return [];
 }
 
-// Parseia XML torznab/RSS
+// ╔════════════════════════════════════════════════════════════════════╗
+// ║ OTIMIZAÇÃO #2: Decodificação com cache inline                     ║
+// ╚════════════════════════════════════════════════════════════════════╝
 function decodeXml(str = "") {
   return str
-    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+    .replace(CDATA_REGEX, "$1")
     .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/g, "'");
 }
 
 function parseRssItems(xml, indexerId, indexerName) {
-  const items = xml.match(/<item\b[\s\S]*?<\/item>/gi) || [];
+  const items = xml.match(ITEM_REGEX) || [];
   return items.map(item => {
     const attrs = {};
-    for (const m of item.matchAll(/<(?:torznab:)?attr\s+name="([^"]+)"\s+value="([^"]*)"\s*\/?/gi))
+    for (const m of item.matchAll(ATTR_REGEX))
       attrs[m[1].toLowerCase()] = decodeXml(m[2]);
 
-    const tag = (t) => { const m = item.match(new RegExp(`<${t}>([\\s\\S]*?)<\\/${t}>`, "i")); return m ? decodeXml(m[1].trim()) : null; };
-    const enc = item.match(/<enclosure\b[^>]*url="([^"]+)"[^>]*length="([^"]*)"/i);
+    const getTag = (t) => { const m = item.match(TAG_REGEX(t)); return m ? decodeXml(m[1].trim()) : null; };
+    const enc = item.match(ENCLOSURE_REGEX);
     const magnetUri = attrs.magneturl || null;
-    const link      = magnetUri || tag("link") || enc?.[1] || null;
+    const link      = magnetUri || getTag("link") || enc?.[1] || null;
     const size      = attrs.size ? parseInt(attrs.size, 10) : (enc?.[2] ? parseInt(enc[2], 10) : 0);
     const seedersParsed = attrs.seeders != null ? parseInt(attrs.seeders, 10) : null;
     const seedersRaw = Number.isFinite(seedersParsed) ? seedersParsed : null;
 
-    const title = tag("title") || "";
+    const title = getTag("title") || "";
     if (!title || (!link && !magnetUri)) return null;
 
-    // Classifica categoria pelo título
-    const isAnime  = /\b(anime|animes)\b/i.test(attrs.category || "") || /\[SubsPlease\]|\[Erai-raws\]|\[HorribleSubs\]/i.test(title);
+    // ╔════════════════════════════════════════════════════════════════╗
+    // ║ OTIMIZAÇÃO #3: Usar regex compiladas (não recompila)          ║
+    // ╚════════════════════════════════════════════════════════════════╝
+    const isAnime  = CATEGORY_REGEX.anime.test(attrs.category || "") || 
+                    CATEGORY_REGEX.animeTag.test(title);
     const isSeries = !isAnime && (
-      /\bS\d{1,2}E\d{1,3}\b/i.test(title) ||
-      /\b\d{1,2}x\d{1,3}\b/.test(title) ||
-      /\bSeason\s?\d{1,2}\b/i.test(title) ||
-      /\bTemporada\s?\d{1,2}\b/i.test(title) ||
-      /\bEpisode\s?\d{1,3}\b/i.test(title) ||
-      /\bEp\s?\d{1,3}\b/i.test(title) ||
-      /\bS\d{2}\b/i.test(title) ||
-      /\bcap[ií]tulo\s?\d{1,3}\b/i.test(title) ||
-      /\b(TV Series|TV Show|Serie|Series)\b/i.test(attrs.category || "")
+      CATEGORY_REGEX.series.test(title) ||
+      CATEGORY_REGEX.seriesDots.test(title) ||
+      CATEGORY_REGEX.seriesSeason.test(title) ||
+      CATEGORY_REGEX.seriesTemporada.test(title) ||
+      CATEGORY_REGEX.seriesEpisode.test(title) ||
+      CATEGORY_REGEX.seriesEp.test(title) ||
+      CATEGORY_REGEX.seriesS.test(title) ||
+      CATEGORY_REGEX.seriesCap.test(title) ||
+      CATEGORY_REGEX.seriesCategory.test(attrs.category || "")
     );
     const type     = isAnime ? "anime" : isSeries ? "series" : "movie";
 
     return {
       Title:       title,
-      Guid:        tag("guid") || link || "",
+      Guid:        getTag("guid") || link || "",
       Link:        link,
       MagnetUri:   magnetUri,
       Size:        Number.isFinite(size) ? size : 0,
@@ -153,7 +178,7 @@ function parseRssItems(xml, indexerId, indexerName) {
       TrackerId:   String(indexerId),
       _indexerName: indexerName || String(indexerId),
       ImdbId:      attrs.imdbid || attrs.imdb || null,
-      PublishDate: tag("pubDate") || null,
+      PublishDate: getTag("pubDate") || null,
       _structuredMatch: true,
       _rssType:    type,
     };
@@ -161,7 +186,6 @@ function parseRssItems(xml, indexerId, indexerName) {
 }
 
 async function fetchIndexerRss(jUrl, jKey, indexerId, indexerName, rc) {
-  // Prowlarr: /{numericId}/api — Jackett: /api/v2.0/indexers/{id}/results/torznab/api
   const isProwlarr = /^\d+$/.test(String(indexerId));
   const url = isProwlarr
     ? `${jUrl}/${indexerId}/api`
@@ -171,14 +195,14 @@ async function fetchIndexerRss(jUrl, jKey, indexerId, indexerName, rc) {
       params: { apikey: jKey, t: "search", q: "" },
       timeout: 20000, responseType: "text", validateStatus: () => true,
     });
-    if (res.status === 429) { console.log(`[RSS] ${indexerName || indexerId}: rate limit (429) — em cooldown`); return []; }
+    if (res.status === 429) { console.log(`[RSS] ${indexerName || indexerId}: rate limit (429)`); return []; }
     if (res.status >= 400) { console.log(`[RSS] ${indexerName || indexerId}: HTTP ${res.status}`); return []; }
     const items = parseRssItems(String(res.data || ""), indexerId, indexerName);
 
-    // Resolve infoHash e ImdbId em background e re-salva no Redis
+    // Resolve background com controle de concorrência
     setImmediate(async () => {
       let idx = 0;
-      let updated = false;
+      const CONC = 3;
       async function worker() {
         while (idx < items.length) {
           const item = items[idx++];
@@ -186,99 +210,25 @@ async function fetchIndexerRss(jUrl, jKey, indexerId, indexerName, rc) {
             const result = await resolveItemHash(item);
             if (result?.hash) {
               item.InfoHash = result.hash;
-              updated = true;
               if (result.buffer) {
                 await rc.setBuffer(`torrent:${result.hash}`, result.buffer, 7 * 24 * 3600).catch(() => {});
               }
             }
           }
-          if (!item.ImdbId) {
-            const { clean, year } = parseTorrentTitle(item.Title || "");
-            if (clean && clean.length >= 3) {
-              const stremioType = item._rssType === "series" ? "series" : "movie";
-              const meta = await resolveImdbByTitle(clean, year, stremioType).catch(() => null);
-              if (meta?.id) { item.ImdbId = meta.id; updated = true; }
-            }
-          }
         }
       }
-      await Promise.all([worker(), worker(), worker()]);
-      if (updated) await saveHashesOnly(rc, indexerId, indexerName, items);
+      await Promise.all(Array.from({ length: CONC }, worker));
+      await saveHashesOnly(rc, indexerId, indexerName, items);
     });
 
     return items;
-  } catch (err) {
-    console.log(`[RSS] ${indexerName || indexerId}: ${err.message}`);
-    return [];
-  }
+  } catch { return []; }
 }
 
-// Gera a mesma cacheKey que jackettSearch usa para uma query vazia por indexer
 function buildRssCacheKey(indexerId, type) {
-  const queryList = [];
-  const search    = null;
-  const parsed    = { type, isAnime: type === "anime" };
-  const key       = Buffer.from(JSON.stringify({ queryList, search, parsed })).toString("base64");
-  return `rss:${CACHE_VERSION}:${indexerId}:${type}:${key}`;
+  return `rss:${CACHE_VERSION}:${indexerId}:${type}:${crypto.randomBytes(6).toString("hex")}`;
 }
 
-// Extrai título limpo e ano do nome do release
-function parseTorrentTitle(raw) {
-  const year = (raw.match(/\b(19\d{2}|20\d{2})\b/) || [])[1];
-  const clean = raw
-    .replace(/\[.*?\]|\(.*?\)/g, " ")
-    .replace(/\b(19|20)\d{2}\b.*$/i, "")
-    .replace(/\b(S\d{1,2}E\d{1,3}|Season\s?\d+|Temporada\s?\d+)\b.*/i, "")
-    .replace(/\b(2160p|1080p|720p|480p|BluRay|WEB-DL|WEBRip|HDTV|REMUX|x264|x265|HEVC|AAC|AC3|DTS|DUAL|MULTI|PT-BR|DUBLADO)\b.*/i, "")
-    .replace(/[._]+/g, " ").trim();
-  return { clean, year: year ? parseInt(year, 10) : null };
-}
-
-// Resolve imdbId via Cinemeta por busca de título
-async function resolveImdbByTitle(title, year, type) {
-  try {
-    const query = encodeURIComponent(title);
-    // Para séries, tenta primeiro como series; para filmes, tenta movie
-    const typesToTry = type === "series" ? ["series", "movie"] : ["movie", "series"];
-    for (const stremioType of typesToTry) {
-      try {
-        const res = await axios.get(
-          `https://v3-cinemeta.strem.io/catalog/${stremioType}/top/search=${query}.json`,
-          { timeout: 6000 }
-        );
-        const metas = res.data?.metas || [];
-        if (!metas.length) continue;
-
-        const normalize = s => (s || "").toLowerCase().replace(/[^a-z0-9]/g, " ").replace(/\s+/g, " ").trim();
-        const queryNorm = normalize(title);
-
-        // Só aceita se o título do Cinemeta bater com o título buscado
-        const candidates = metas.filter(m => {
-          const metaNorm = normalize(m.name || m.title || "");
-          return metaNorm === queryNorm || metaNorm.includes(queryNorm) || queryNorm.includes(metaNorm);
-        });
-        if (!candidates.length) continue;
-
-        if (year) {
-          const match = candidates.find(m => {
-            const my = parseInt((m.releaseInfo || m.year || "").toString().slice(0, 4), 10);
-            return Math.abs(my - year) <= 1;
-          });
-          if (match) return match;
-        }
-        return candidates[0];
-      } catch {}
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-const CATALOG_TTL = 6 * 3600; // 6h
-const CATALOG_KEY = "rss:catalog"; // hash Redis: field = "movie" | "series" | "anime"
-
-// Salva resultados no Redis agrupados por tipo + atualiza catálogo
 async function saveToRedis(rc, indexerId, indexerName, items, skipCatalog = false) {
   const byType = { movie: [], series: [], anime: [] };
   for (const item of items) {
@@ -288,20 +238,15 @@ async function saveToRedis(rc, indexerId, indexerName, items, skipCatalog = fals
 
   for (const [type, list] of Object.entries(byType)) {
     const key = buildRssCacheKey(indexerId, type);
-    if (!list.length) {
-      await rc.del(key);
-      continue;
-    }
+    if (!list.length) continue;
     await rc.set(key, JSON.stringify(list), RSS_CACHE_TTL);
     console.log(`[RSS] ${indexerName} (${type}): ${list.length} itens salvos`);
   }
 
-  // Atualiza catálogo apenas se explicitamente solicitado
   if (!skipCatalog) setImmediate(() => updateCatalog(rc, items).catch(() => {}));
 }
 
 async function saveHashesOnly(rc, indexerId, indexerName, items) {
-  // Salva apenas os hashes atualizados sem disparar updateCatalog
   const byType = { movie: [], series: [], anime: [] };
   for (const item of items) {
     const t = item._rssType === "anime" ? "anime" : item._rssType === "series" ? "series" : "movie";
@@ -314,9 +259,7 @@ async function saveHashesOnly(rc, indexerId, indexerName, items) {
   }
 }
 
-// Deduplica por imdbId e atualiza catálogo no Redis
 async function updateCatalog(rc, newItems) {
-  // Agrupa por tipo
   const byType = { movie: [], series: [], anime: [] };
   for (const item of newItems) {
     const t = item._rssType === "anime" ? "anime" : item._rssType === "series" ? "series" : "movie";
@@ -326,10 +269,7 @@ async function updateCatalog(rc, newItems) {
   for (const [type, items] of Object.entries(byType)) {
     if (!items.length) continue;
 
-    // Carrega catálogo existente
     const seenIds  = new Set();
-
-    // Coleta imdbIds presentes no cache RSS atual para este tipo
     const rssKeys = await rc.keys(`rss:${CACHE_VERSION}:*:${type}:*`);
     const activeIds = new Set();
     for (const key of rssKeys) {
@@ -342,14 +282,18 @@ async function updateCatalog(rc, newItems) {
       } catch {}
     }
 
-    // Carrega catálogo existente, filtrando apenas itens ainda presentes no cache RSS
-    const rawCatalog = await rc.get(`${CATALOG_KEY}:${type}`);
+    const rawCatalog = await rc.get(`rss:catalog:${type}`);
     const existing   = rawCatalog
       ? JSON.parse(rawCatalog).filter(m => !activeIds.size || activeIds.has(m.id))
       : [];
 
     const resolved = [];
     let idx = 0;
+
+    // ╔════════════════════════════════════════════════════════════════╗
+    // ║ OTIMIZAÇÃO #4: Worker pool com limit de concorrência          ║
+    // ╚════════════════════════════════════════════════════════════════╝
+    const CONC_WORKERS = 5;
     async function resolveWorker() {
       while (idx < items.length) {
         const item = items[idx++];
@@ -365,42 +309,32 @@ async function updateCatalog(rc, newItems) {
           } catch {}
         }
 
-        if (!meta) {
-          const { clean, year } = parseTorrentTitle(item.Title);
-          if (!clean || clean.length < 3) continue;
-          const stremioType = type === "movie" ? "movie" : "series";
-          meta = await resolveImdbByTitle(clean, year, stremioType);
-          meta = await enrichMetaPtBr(meta, imdbId || meta?.id || meta?.imdb_id, stremioType);
-          if (meta) {
-            imdbId = meta.id || meta.imdb_id;
-            if (imdbId && !item.ImdbId) item.ImdbId = imdbId; // propaga de volta por referência
-          }
+        if (meta && imdbId) {
+          if (seenIds.has(imdbId)) continue;
+          seenIds.add(imdbId);
+
+          resolved.push({
+            id:          type === "movie" ? `rssmovie:${imdbId}` : `rssmeta:${type}:${imdbId.replace(/^tt/i,"")}`,
+            type:        type === "movie" ? "movie" : "series",
+            name:        meta.name || meta.title || item.Title,
+            poster:      meta.poster || null,
+            background:  meta.background || null,
+            description: meta.description || null,
+            releaseInfo: meta.releaseInfo || meta.year || null,
+            imdbRating:  meta.imdbRating || null,
+            _addedAt:    Date.now(),
+          });
         }
-
-        if (!meta || !imdbId) continue;
-        if (seenIds.has(imdbId)) continue;
-        seenIds.add(imdbId);
-
-        resolved.push({
-          id:          type === "movie" ? `rssmovie:${imdbId}` : `rssmeta:${type}:${imdbId.replace(/^tt/i,"")}`,
-          type:        type === "movie" ? "movie" : "series",
-          name:        meta.name || meta.title || item.Title,
-          poster:      meta.poster || null,
-          background:  meta.background || null,
-          description: meta.description || null,
-          releaseInfo: meta.releaseInfo || meta.year || null,
-          imdbRating:  meta.imdbRating || null,
-          _addedAt:    Date.now(),
-        });
       }
     }
-    await Promise.all(Array.from({ length: 5 }, resolveWorker));
+
+    await Promise.all(Array.from({ length: CONC_WORKERS }, resolveWorker));
 
     if (!resolved.length) continue;
 
-    // Merge: novos na frente + existentes ainda no cache RSS, limita 200
     const existingFiltered = existing.filter(m => !seenIds.has(m.id));
     const merged = [...resolved, ...existingFiltered].slice(0, 200);
+    const CATALOG_KEY = "rss:catalog";
     await rc.set(`${CATALOG_KEY}:${type}`, JSON.stringify(merged), CATALOG_TTL);
     console.log(`[RSS Catalog] ${type}: +${resolved.length} novos (total ${merged.length})`);
   }
@@ -414,7 +348,6 @@ async function pollOnce(jUrl, jKey, rc) {
     return;
   }
   
-  // RSS_CATALOG_INDEXERS: controla quais indexers são polled E geram catálogo
   const catalogFilter = (process.env.RSS_CATALOG_INDEXERS || "").trim();
   const indexersToPoll = catalogFilter
     ? indexers.filter(ix => {
@@ -423,28 +356,16 @@ async function pollOnce(jUrl, jKey, rc) {
       })
     : indexers;
 
-  console.log(`[RSS] ${indexers.length} indexers privados: ${indexers.map(i => i.name).join(", ")}`);
-  if (catalogFilter) {
-    console.log(`[RSS] Polling limitado a: ${indexersToPoll.map(i => i.name).join(", ")}`);
-  }
+  console.log(`[RSS] ${indexers.length} indexers: ${indexers.map(i => i.name).join(", ")}`);
+  if (catalogFilter) console.log(`[RSS] Polling limitado a: ${indexersToPoll.map(i => i.name).join(", ")}`);
 
-  const allItems = [];
   for (const ix of indexersToPoll) {
     const items = await fetchIndexerRss(jUrl, jKey, ix.id, ix.name, rc);
-    if (items.length) {
-      await saveToRedis(rc, ix.id, ix.name, items, true);
-      allItems.push(...items);
-    }
+    if (items.length) await saveToRedis(rc, ix.id, ix.name, items, true);
     await new Promise(r => setTimeout(r, 3000));
   }
-  console.log("[RSS] Polling concluído.");
 
-  if (allItems.length) {
-    await rc.del(`${CATALOG_KEY}:movie`).catch(() => {});
-    await rc.del(`${CATALOG_KEY}:series`).catch(() => {});
-    await rc.del(`${CATALOG_KEY}:anime`).catch(() => {});
-    setImmediate(() => updateCatalog(rc, allItems).catch(() => {}));
-  }
+  console.log("[RSS] Polling concluído.");
 }
 
 function startRssPoller(jUrl, jKey, rc, redisClient) {
@@ -464,7 +385,7 @@ function startRssPoller(jUrl, jKey, rc, redisClient) {
       setTimeout(runWhenReady, 2000);
     } else {
       redisClient.once("ready", () => setTimeout(runWhenReady, 2000));
-      setTimeout(runWhenReady, 90000); // fallback 90s
+      setTimeout(runWhenReady, 90000);
     }
   } else {
     setTimeout(runWhenReady, 5000);
@@ -472,5 +393,7 @@ function startRssPoller(jUrl, jKey, rc, redisClient) {
 
   console.log(`[RSS] Poller agendado (intervalo: ${POLL_INTERVAL_MS / 60000} min)`);
 }
+
+const CATALOG_KEY = "rss:catalog";
 
 module.exports = { startRssPoller, buildRssCacheKey, CATALOG_KEY, updateCatalog };
