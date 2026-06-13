@@ -258,7 +258,7 @@ async function torboxAddTorrent(magnet, key, waitForReady = false, buffer = null
     if (buffer) {
       const formData = require("form-data")();
       formData.append("file", buffer, { filename: "torrent.torrent" });
-      const res = await axios.post("https://api.torbox.app/v1/api/torrents/createfromfile",
+      const res = await axios.post("https://api.torbox.app/v1/api/torrents/createtorrent",
         formData,
         {
           headers: { ...headersAuth, ...formData.getHeaders() },
@@ -276,10 +276,12 @@ async function torboxAddTorrent(magnet, key, waitForReady = false, buffer = null
       }
       torrentId = res.data.data.torrent_id;
     } else {
-      const res = await axios.post("https://api.torbox.app/v1/api/torrents/createfrommagnet",
-        { magnet },
+      const formData = require("form-data")();
+      formData.append("magnet", magnet);
+      const res = await axios.post("https://api.torbox.app/v1/api/torrents/createtorrent",
+        formData,
         {
-          headers: headersAuth,
+          headers: { ...headersAuth, ...formData.getHeaders() },
           timeout: 20000,
           validateStatus: s => s < 500,
         }
