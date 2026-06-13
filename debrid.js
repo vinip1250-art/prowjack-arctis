@@ -469,7 +469,13 @@ async function resolveTBStream(infoHash, magnet, season, episode, isAnime, key, 
     }
   }
 
-  if (filesList) {
+  // ╔════════════════════════════════════════════════════════════════════╗
+  // ║ OTIMIZAÇÃO: Cache global → gerar link direto para playback        ║
+  // ║ Se arquivo está em cache global (checkcached confirmou),           ║
+  // ║ retorna URL de requestdl imediatamente sem precisar de torrentId   ║
+  // ╚════════════════════════════════════════════════════════════════════╝
+  // Caso 2: checkcached confirmou cache global com arquivo pronto
+  if (filesList && Array.isArray(filesList) && filesList.length > 0) {
     const variant = {};
     filesList.forEach((f, idx) => {
       const fid = f.id !== undefined ? f.id : idx;
@@ -478,6 +484,16 @@ async function resolveTBStream(infoHash, magnet, season, episode, isAnime, key, 
 
     const matchedFile = pickTBFile(variant, season, episode, isAnime);
     if (!matchedFile) return { queued: true, cached: true };
+    
+    // ✨ NOVO: Se arquivo está em cache global confirmado, retorna URL direto
+    // O TorBox aceita requestdl mesmo sem torrentId se o arquivo está em cache
+    if (matchedFile && cache.id) {
+      // Se temos o torrentId da conta, usa-o
+      const url = `https://api.torbox.app/v1/api/torrents/requestdl?token=${key}&torrent_id=${cache.id}&file_id=${encodeURIComponent(matchedFile.id)}&redirect=true`;
+      return { url, filename: matchedFile.filename };
+    }
+    
+    // Senão, retorna o fileId para o addon criar torrent on-demand
     return { queued: true, cached: true, fileId: matchedFile.id, filename: matchedFile.filename };
   }
 
