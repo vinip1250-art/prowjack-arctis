@@ -173,7 +173,7 @@ const rc = {
 };
 const CACHE_VERSION = "v12-native-debrid";
 const STREAM_CACHE_VERSION = "v31-scrap-direct-cache";
-const TORRENT_DOWNLOAD_TIMEOUT_MS = 8000;
+const TORRENT_DOWNLOAD_TIMEOUT_MS = 5000;
 const TORRENT_FAILURE_TTL = 10 * 60;
 const STREMTHRU_PROXY_TIMEOUT_MS = Math.max(3000, parseInt(process.env.STREMTHRU_PROXY_TIMEOUT_MS || "12000", 10) || 12000);
 const QB_EXTRA_SLOTS = Math.max(0, parseInt(process.env.QB_EXTRA_SLOTS || "5", 10) || 5);
@@ -2992,9 +2992,14 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
         })
         .filter(r => r._priorityIndexer || type !== "movie" || !looksLikeEpisodeRelease(r.Title || ""))
         .filter(r => {
-          if (r._priorityIndexer || !prefs.onlyDubbed || !_stPriorityLang) return true;
-          const langs = getLangs(r.Title || "", parsed.isAnime);
-          return langs.some(l => l.code === _stPriorityLang);
+          if (prefs.onlyDubbed && _stPriorityLang) {
+            const langs = getLangs(r.Title || "", parsed.isAnime);
+            const isMulti = /(multi|dual)[-.\\s]?(audio)?/i.test(r.Title || "");
+            const hasLang = langs.some(l => l.code === _stPriorityLang) || isMulti;
+            if (!hasLang) return false;
+          }
+          if (r._priorityIndexer) return true;
+          return true;
         })
         .map(r => {
           r._originalScore = ((r._priorityIndexer ? 1 : 0) * 5000000) + score(r, prefs.weights, parsed.isAnime, _stPriorityLang);
@@ -3247,6 +3252,14 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
             return true;
           })
           .filter(r => {
+            // Apenas Idioma: Deve ser avaliado primeiro, como regra absoluta
+            if (prefs.onlyDubbed && priorityLang) {
+              const langs   = getLangs(r.Title || "", parsed.isAnime);
+              const isMulti = /(multi|dual)[-.\\s]?(audio)?/i.test(r.Title || "");
+              const hasLang = langs.some(l => l.code === priorityLang) || isMulti;
+              if (!hasLang) return false;
+            }
+
             if (r._priorityIndexer) {
               r._titleMatchScore = Math.max(r._titleMatchScore || 0, 1);
               return true;
@@ -3254,10 +3267,7 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
             if (prefs.keywordBoost && matchesKeywordBoost(r.Title || "", prefs.keywordBoost)) {
               r._titleMatchScore = 1; r._keywordMatch = true; return true;
             }
-            if (!prefs.onlyDubbed || !priorityLang) return true;
-            const langs   = getLangs(r.Title || "", parsed.isAnime);
-            const hasLang = priorityLang ? langs.some(l => l.code === priorityLang) : false;
-            return hasLang;
+            return true;
           })
           .filter(r => {
             if (r._priorityIndexer) return true;
@@ -3333,7 +3343,7 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
       const httpOnly = filteredCandidates.filter(r => !hasDirectInfoHash(r));
       const priorityDirect = direct.filter(r => r._priorityIndexer || candidateHasPriorityLang(r) || candidateHasKeyword(r) || r._scrapSource);
       const regularDirect = direct.filter(r => !r._priorityIndexer && !candidateHasPriorityLang(r) && !candidateHasKeyword(r) && !r._scrapSource);
-      const priorityHttp = httpOnly.filter(r => r._priorityIndexer || r._keywordMatch || candidateHasPriorityLang(r) || candidateHasKeyword(r) || r._scrapSource);
+      const priorityHttp = httpOnly.filter(r => r._priorityIndexer || r._keywordMatch || candidateHasPriorityLang(r) || candidateHasKeyword(r) || r._scrapSource).slice(0, 15);
       const regularHttp = httpOnly.filter(r => !r._priorityIndexer && !r._keywordMatch && !candidateHasPriorityLang(r) && !candidateHasKeyword(r) && !r._scrapSource).slice(0, Math.max(4, Math.ceil(maxOut / 3)));
       const directLimit = Math.max(maxOut * 3, 80);
       const selected = [...priorityDirect, ...regularDirect.slice(0, directLimit), ...priorityHttp, ...regularHttp];
