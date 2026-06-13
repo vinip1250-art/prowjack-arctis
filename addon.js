@@ -2518,6 +2518,8 @@ app.get("/:userConfig/debrid-add/:provider/:infoHash", async (req, res) => {
         const tbResult = await torboxAddTorrent(magnet, config.torboxKey, false, torrentBuffer, { infoHash });
         if (!tbResult) {
           console.log(`[ON-DEMAND] Falha ao adicionar ao TorBox (pode já estar na fila ou erro de API)`);
+          // ✨ NOVO: Se falhou ao adicionar, NÃO é erro se cache global existe
+          // O polling posterior vai detectar e retornar o link
         } else {
           console.log(`[ON-DEMAND] Adicionado com sucesso ao TorBox`);
           // Se o retorno já traz o torrent completo e pronto (cached), resolve imediatamente
@@ -2560,7 +2562,7 @@ app.get("/:userConfig/debrid-add/:provider/:infoHash", async (req, res) => {
   // TorBox: polling com backoff exponencial (até 120s)
   if (isTB) {
     const deadline = Date.now() + 120000;
-    const delays   = [2000, 3000, 5000, 8000];
+    const delays   = [1000, 2000, 3000, 5000]; // ✨ OTIMIZADO: começar mais rápido
     let delayIndex = 0;
     console.log(`[ON-DEMAND] TorBox: aguardando download (até 120s)...`);
 
@@ -2577,7 +2579,13 @@ app.get("/:userConfig/debrid-add/:provider/:infoHash", async (req, res) => {
           t.hash?.toLowerCase() === infoHash.toLowerCase()
         );
 
-        if ((torrent?.download_present === true || torrent?.download_finished === true || torrent?.download_state === "cached") && torrent?.files?.length > 0) {
+        // ✨ NOVO: Detectar se está em cache global mesmo sem download_state === "cached"
+        const isCached = torrent?.download_present === true || 
+                        torrent?.download_finished === true || 
+                        torrent?.download_state === "cached" ||
+                        (torrent?.hash && torrent?.files?.length > 0); // Se tem hash e files, está pronto
+        
+        if (isCached && torrent?.files?.length > 0) {
           console.log(`[ON-DEMAND] TorBox pronto! Resolvendo stream...`);
           if (requestedFileId) {
             const tid = torrent.id || torrent.torrent_id;
@@ -2594,6 +2602,8 @@ app.get("/:userConfig/debrid-add/:provider/:infoHash", async (req, res) => {
             await rc.del(lockKey);
             return res.redirect(302, stream.url);
           }
+          // ✨ NOVO: Se resolveu mas sem URL, ainda está processando
+          console.log(`[ON-DEMAND] TorBox em processamento...`);
         }
       } catch (err) {
         console.log(`[ON-DEMAND] TorBox polling erro: ${err.message}`);
