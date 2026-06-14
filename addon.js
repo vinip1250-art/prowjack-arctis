@@ -1387,6 +1387,8 @@ async function resolveInfoHash(r, reqCtx = {}) {
       }
     } catch {}
 
+    if (reqCtx.fastOnly) return null; // Aborta o download real para não bloquear a resposta rápida
+
     let downloadPromise = activeDownloads.get(urlHashKey);
     if (!downloadPromise) {
       downloadPromise = (async () => {
@@ -2302,11 +2304,11 @@ app.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {
         while (idx < candidates.length) {
           const i = idx++;
           const cand = candidates[i];
-          const resolved = await resolveInfoHash(cand, reqCtx);
+          const resolved = await resolveInfoHash(cand, { ...reqCtx, fastOnly: true });
           if (resolved?.infoHash) {
             results2[i] = { ...cand, _resolved: resolved };
           } else if (cand.MagnetUri || cand.Link) {
-            // Se falhou em resolver (ex: timeout) mas tem link, mantém para o StremThru
+            // Se falhou em resolver (ex: fastOnly) mas tem link, mantém para o StremThru
             results2[i] = { ...cand, _resolved: { infoHash: null, url: cand.MagnetUri || cand.Link } };
           }
         }
@@ -2355,6 +2357,10 @@ app.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {
       res.set("Cache-Control", "public, max-age=60, s-maxage=300");
     }
     res.json({ streams });
+
+    // Resolve no background para caches futuros
+    const bgs = [...candidates].slice(0, maxOut * 2).map(r => resolveInfoHash(r, {}));
+    Promise.allSettled(bgs).catch(() => {});
   } catch (err) {
     console.error(`[Internal] Erro: ${err.message}`);
     res.json({ streams: [] });
@@ -2616,7 +2622,7 @@ app.get("/:userConfig/debrid-add/:provider/:infoHash", async (req, res) => {
   const prefs   = await resolvePrefs(req.params.userConfig);
   const config  = prefs.debridConfig;
 
-  if (!config || (!magnet && !linkUrl)) {
+  if ((!config && provider !== "fallback") || (!magnet && !linkUrl)) {
     return res.status(400).send("Configuração ou magnet/link ausente");
   }
 
@@ -3182,7 +3188,7 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
           async function _worker() {
             while (_idx < _stCandidates.length) {
               const i = _idx++;
-              const resolved = await resolveInfoHash(_stCandidates[i], reqCtx);
+              const resolved = await resolveInfoHash(_stCandidates[i], { ...reqCtx, fastOnly: true });
               _res[i] = resolved?.infoHash ? { ..._stCandidates[i], _resolved: resolved } : null;
             }
           }
@@ -3205,24 +3211,31 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
           const sources = (trackerList.length ? trackerList : EXTRA_TRACKERS)
             .map(t => `tracker:${t}`).concat(`dht:${resolved.infoHash}`);
             
-          const isPrivateTracker = !r.MagnetUri && !!resolved.buffer;
+          const isPrivateTracker = !r.MagnetUri && !!resolved?.buffer;
           const fallbackTitle = (r.Title && !r.Title.includes('\n')) ? r.Title : "";
           const displayFileName = r._scrapStream?._filename || fallbackTitle;
           const filenameLine = displayFileName ? `📂 ${displayFileName}` : "";
+          const publicBase = getPublicBase(req);
             
           const p2pName = `${prefs.addonName || "ProwJack"}\n⬇️ Links`;
           const p2pStream = {
             name: p2pName, 
             description: [description, filenameLine, isPrivateTracker ? "🔒 Tracker Privado" : ""].filter(Boolean).join("\n"),
-            infoHash: resolved.infoHash, sources,
             _sourceType: "p2p", _priorityIndexer: !!r._priorityIndexer,
-            behaviorHints: { filename: displayFileName, notWebReady: false, bingeGroup: `prowjack|${resolved.infoHash}` },
+            behaviorHints: { filename: displayFileName, notWebReady: false, bingeGroup: `prowjack|${resolved?.infoHash || r.Link}` },
           };
+          if (resolved?.infoHash) {
+            p2pStream.infoHash = resolved.infoHash;
+            p2pStream.sources = sources;
+          } else {
+            const fakeInfoHash = crypto.createHash("sha1").update(r.Link || r.MagnetUri || "").digest("hex");
+            p2pStream.url = `${publicBase}/${req.params.userConfig}/debrid-add/fallback/${fakeInfoHash}?link=${encodeURIComponent(r.Link || "")}&magnet=${encodeURIComponent(r.MagnetUri || "")}`;
+          }
           const streams = [p2pStream];
 
           const qbitCreds = null;
           const qbitEnabledForPrefs = shouldOfferQbitForResult(prefs, isPrivateTracker, qbitCreds);
-          if (qbitEnabledForPrefs && resolved.infoHash) {
+          if (qbitEnabledForPrefs && resolved?.infoHash) {
             let torrentB64 = null;
             if (resolved.buffer) {
               try { torrentB64 = injectTrackers(resolved.buffer).toString("base64"); }
@@ -3295,6 +3308,11 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
       console.log(`[STREMTHRU] Enviando ${finalStreams.length} streams (${stStreams.length} debrid + P2P)`);
       console.log(`=========================================\n`);
       releaseLock(finalStreams);
+
+      // Inicia resolução em background para popular o cache para a próxima busca
+      const bgs = [...jackettResults].slice(0, 40).map(r => resolveInfoHash(r, {}));
+      Promise.allSettled(bgs).catch(() => {});
+
       return res.json({ streams: finalStreams });
     }
 
