@@ -844,28 +844,8 @@ async function generate(openManifest = false) {
   try {
     const prefs = buildPrefs();
 
-    // StremThru Wrap: exibe a URL direta do proxy StremThru para instalação no Stremio
-    if (prefs.stConfig) {
-      const { stConfig, debrid, ...prowjackPrefs } = prefs;
-      prowjackPrefs.enableP2P = true;
-      const upstreamRef = await saveServerConfig(prowjackPrefs);
-      const prowjackManifest = `${location.origin}/${upstreamRef}/manifest.json`;
-      const storeCodeMap = { torbox:'tb', realdebrid:'rd', alldebrid:'ad', debridlink:'dl', premiumize:'pm', offcloud:'oc' };
-      const wrapEncoded = encodeWrapPayload(JSON.stringify({
-        upstreams: [{ u: prowjackManifest }],
-        stores: prefs.stConfig.stores.map(s => ({ c: storeCodeMap[s.c]||s.c, t: s.t })),
-        name: prefs.addonName || 'ProwJack [ST]',
-      }));
-      const proxyManifestUrl = `${prefs.stConfig.url.replace(/\/+$/, '')}/stremio/wrap/${wrapEncoded}/manifest.json`;
-      if (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
-        alert("⚠️ Usando 'localhost' — o StremThru remoto não conseguirá acessar. Use seu IP ou domínio público!");
-      // URL final = proxy StremThru direto (sem passar pelo ProwJack)
-      const stremioUrl = `stremio://${new URL(proxyManifestUrl).host}${new URL(proxyManifestUrl).pathname}`;
-      setInstallUrl(proxyManifestUrl, stremioUrl);
-      toast('✔ URL StremThru gerada!', 'ok');
-      if (openManifest) window.open(proxyManifestUrl, '_blank', 'noopener');
-      return proxyManifestUrl;
-    }
+    // StremThru agora é roteado internamente pelo ProwJack.
+    // O manifest gerado será o do ProwJack, que chamará o proxy via server-side.
 
     const configRef = await saveServerConfig(prefs);
     history.replaceState({}, '', `/${configRef}/configure`);

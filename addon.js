@@ -173,7 +173,7 @@ const rc = {
 };
 const CACHE_VERSION = "v12-native-debrid";
 const STREAM_CACHE_VERSION = "v31-scrap-direct-cache";
-const TORRENT_DOWNLOAD_TIMEOUT_MS = 5000;
+const TORRENT_DOWNLOAD_TIMEOUT_MS = 15000;
 const TORRENT_FAILURE_TTL = 10 * 60;
 const STREMTHRU_PROXY_TIMEOUT_MS = Math.max(3000, parseInt(process.env.STREMTHRU_PROXY_TIMEOUT_MS || "12000", 10) || 12000);
 const QB_EXTRA_SLOTS = Math.max(0, parseInt(process.env.QB_EXTRA_SLOTS || "5", 10) || 5);
