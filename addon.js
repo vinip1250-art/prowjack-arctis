@@ -2922,14 +2922,19 @@ async function fetchScrapStreams(manifestUrl, type, id, options = {}) {
     return streams
       .filter(s => s.infoHash || s.externalUrl || (s.url && !s.url.startsWith("magnet:")))
       .map(s => {
+        const nameStr = s.name || "";
+        const titleStr = s.title || "";
+        const descStr = s.description || "";
+        const filenameStr = s.behaviorHints?.filename || "";
+        
         const cleanStream = {
           ...s,
-          name: stripSourceBadges(s.name || ""),
-          title: stripSourceBadges(s.title || ""),
-          description: stripSourceBadges(s.description || ""),
+          name: options.preserveBadges ? nameStr : stripSourceBadges(nameStr),
+          title: options.preserveBadges ? titleStr : stripSourceBadges(titleStr),
+          description: options.preserveBadges ? descStr : stripSourceBadges(descStr),
           behaviorHints: {
             ...(s.behaviorHints || {}),
-            filename: stripSourceBadges(s.behaviorHints?.filename || ""),
+            filename: options.preserveBadges ? filenameStr : stripSourceBadges(filenameStr),
             // notWebReady=true impede exibição no Stremio web/mobile — sempre forçar false
             notWebReady: false,
           },
@@ -3112,7 +3117,7 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
       const indexersForFallback = await resolveSearchIndexers(prefs, parsed.isAnime);
       const [proxyStreams, jackettResults] = await Promise.all([
         proxyManifestUrl
-          ? fetchScrapStreams(proxyManifestUrl, type, id, { timeout: STREMTHRU_PROXY_TIMEOUT_MS, label: "STREMTHRU" })
+          ? fetchScrapStreams(proxyManifestUrl, type, id, { timeout: STREMTHRU_PROXY_TIMEOUT_MS, label: "STREMTHRU", preserveBadges: true })
           : Promise.resolve([]),
         jackettSearch({ parsed, queries, search }, indexersForFallback, prefs),
       ]);
@@ -4032,7 +4037,7 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
     if (prefs.stConfig) {
       const proxyManifestUrl = buildStremThruProxyManifestUrl(req, prefs, req.params.userConfig);
       const proxyStreams = proxyManifestUrl
-        ? await fetchScrapStreams(proxyManifestUrl, type, id, { timeout: STREMTHRU_PROXY_TIMEOUT_MS, label: "STREMTHRU" })
+        ? await fetchScrapStreams(proxyManifestUrl, type, id, { timeout: STREMTHRU_PROXY_TIMEOUT_MS, label: "STREMTHRU", preserveBadges: true })
         : [];
       if (proxyStreams.length) {
         proxyStreams.forEach(s => {
