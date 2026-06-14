@@ -1501,7 +1501,9 @@ async function resolveInfoHash(r, reqCtx = {}) {
             }
           } else {
             await markTorrentDownloadFailed(httpLink);
-            console.warn(`[WARN] Falha ao baixar torrent (${httpLink.slice(0,40)}...): ${err.message}`);
+            const indexerMatch = httpLink.match(/https?:\/\/[^\/]+\/([^\/]+)\/download/);
+            const idxId = indexerMatch ? `Indexador ${indexerMatch[1]}` : httpLink.slice(0,40)+'...';
+            console.warn(`[WARN] Falha ao baixar torrent (${idxId}): ${err.message}`);
           }
           return null;
         } finally {
@@ -1520,7 +1522,9 @@ async function resolveInfoHash(r, reqCtx = {}) {
     const result = await Promise.race([downloadPromise, timeoutPromise]);
     
     if (result === "TIMEOUT") {
-      console.warn(`[WARN] Timeout 6s atingido em resolveInfoHash para ${httpLink.slice(0,50)}... (Download continua em background)`);
+      const indexerMatch = httpLink.match(/https?:\/\/[^\/]+\/([^\/]+)\/download/);
+      const idxId = indexerMatch ? `Indexador ${indexerMatch[1]}` : httpLink.slice(0,50)+'...';
+      console.warn(`[WARN] Timeout 6s atingido em resolveInfoHash para ${idxId} (Download continua em background)`);
       reqCtx.hasTimedOut = true;
       return null;
     }
@@ -3060,7 +3064,7 @@ async function fetchScrapStreams(manifestUrl, type, id, options = {}) {
         }, options.prefs);
       });
   } catch (err) {
-    if (options.label) console.log(`[${options.label}] Falha ao buscar streams externos: ${err.message}`);
+    if (options.label) console.log(`[WARN] Timeout`);
     return [];
   }
 }
@@ -3141,8 +3145,9 @@ function normalizeStremThruStreamName(stream, prefs = {}) {
     }
   }
 
-  const topName = [...badges, icons, addonName].filter(Boolean).join(" ");
-  return `${topName}\n${resLabel || "Links"}`;
+  const topName = addonName;
+  const bottomName = [...badges, icons, resLabel || "Links"].filter(Boolean).join(" ");
+  return `${topName}\n${bottomName}`;
 }
 
 function isPrivateTrackerCandidate(r, resolved = null) {
