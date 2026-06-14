@@ -1373,53 +1373,81 @@ async function resolveInfoHash(r) {
       return null;
     }
 
-    let _magnetRedirect = null;
+    const urlHashKey = `urlhash:${crypto.createHash("sha1").update(httpLink).digest("hex")}`;
     try {
-      const res = await axios.get(httpLink, {
-        timeout: TORRENT_DOWNLOAD_TIMEOUT_MS, maxRedirects: 10, responseType: "arraybuffer",
-        maxContentLength: 8 * 1024 * 1024, validateStatus: s => s < 400,
-        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
-        beforeRedirect: (options) => {
-          if (options.href?.startsWith("magnet:")) {
-            _magnetRedirect = options.href;
-            throw Object.assign(new Error("magnet_redirect"), { isMagnetRedirect: true });
-          }
-        },
-      });
-      const finalUrl = res.request?.res?.responseUrl || "";
-      if (finalUrl.startsWith("magnet:")) {
-        const h = extractInfoHash(finalUrl);
-        return h ? { infoHash: h, files: null, buffer: null } : null;
+      const cachedHash = await rc.get(urlHashKey);
+      if (cachedHash) {
+        try {
+          const cachedBuf = await rc.getBuffer(`torrent:${cachedHash}`);
+          if (cachedBuf) return { infoHash: cachedHash, files: extractTorrentFiles(cachedBuf), buffer: cachedBuf };
+        } catch {}
+        return { infoHash: cachedHash, files: null, buffer: null };
       }
-      const buf = Buffer.from(res.data);
-      if (buf.length > 8 * 1024 * 1024) {
-        console.warn(`[SECURITY] Torrent muito grande: ${buf.length} bytes`);
+    } catch {}
+
+    const downloadPromise = (async () => {
+      let _magnetRedirect = null;
+      try {
+        const res = await axios.get(httpLink, {
+          timeout: 25000, maxRedirects: 10, responseType: "arraybuffer",
+          maxContentLength: 8 * 1024 * 1024, validateStatus: s => s < 400,
+          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
+          beforeRedirect: (options) => {
+            if (options.href?.startsWith("magnet:")) {
+              _magnetRedirect = options.href;
+              throw Object.assign(new Error("magnet_redirect"), { isMagnetRedirect: true });
+            }
+          },
+        });
+        const finalUrl = res.request?.res?.responseUrl || "";
+        if (finalUrl.startsWith("magnet:")) {
+          const h = extractInfoHash(finalUrl);
+          if (h) rc.set(urlHashKey, h, 7 * 24 * 3600).catch(()=>{});
+          return h ? { infoHash: h, files: null, buffer: null } : null;
+        }
+        const buf = Buffer.from(res.data);
+        if (buf.length > 8 * 1024 * 1024) return null;
+        const bodyStr = buf.toString("utf8", 0, Math.min(buf.length, 200));
+        if (bodyStr.trimStart().startsWith("magnet:")) {
+          const h = extractInfoHash(bodyStr.trim());
+          if (h) rc.set(urlHashKey, h, 7 * 24 * 3600).catch(()=>{});
+          return h ? { infoHash: h, files: null, buffer: null } : null;
+        }
+        if (buf[0] === 0x64) {
+          const infoBuf = extractInfoBuf(buf);
+          if (infoBuf) {
+            const realHash = crypto.createHash("sha1").update(infoBuf).digest("hex");
+            rc.setBuffer(`torrent:${realHash}`, buf, 7 * 24 * 3600).catch(() => {});
+            rc.set(urlHashKey, realHash, 7 * 24 * 3600).catch(() => {});
+            return { infoHash: realHash, files: extractTorrentFiles(buf), buffer: buf };
+          }
+        }
+        return null;
+      } catch (err) {
+        if (_magnetRedirect || err.isMagnetRedirect || err.cause?.isMagnetRedirect) {
+          const src = _magnetRedirect || err.cause?.magnetUrl;
+          const h   = src ? extractInfoHash(src) : null;
+          if (h) {
+            rc.set(urlHashKey, h, 7 * 24 * 3600).catch(()=>{});
+            return { infoHash: h, files: null, buffer: null };
+          }
+        } else {
+          await markTorrentDownloadFailed(httpLink);
+          console.warn(`[WARN] Falha ao baixar torrent (${httpLink.slice(0,40)}...): ${err.message}`);
+        }
         return null;
       }
-      const bodyStr = buf.toString("utf8", 0, Math.min(buf.length, 200));
-      if (bodyStr.trimStart().startsWith("magnet:")) {
-        const h = extractInfoHash(bodyStr.trim());
-        return h ? { infoHash: h, files: null, buffer: null } : null;
-      }
-      if (buf[0] === 0x64) {
-        const infoBuf = extractInfoBuf(buf);
-        if (infoBuf) {
-          const realHash = crypto.createHash("sha1").update(infoBuf).digest("hex");
-          // Cacheia o buffer para uso futuro (TTL 7 dias)
-          rc.setBuffer(`torrent:${realHash}`, buf, 7 * 24 * 3600).catch(() => {});
-          return { infoHash: realHash, files: extractTorrentFiles(buf), buffer: buf };
-        }
-      }
-    } catch (err) {
-      if (_magnetRedirect || err.isMagnetRedirect || err.cause?.isMagnetRedirect) {
-        const src = _magnetRedirect || err.cause?.magnetUrl;
-        const h   = src ? extractInfoHash(src) : null;
-        if (h) return { infoHash: h, files: null, buffer: null };
-      } else {
-        await markTorrentDownloadFailed(httpLink);
-        console.warn(`[WARN] Falha ao baixar torrent: ${err.message}`);
-      }
+    })();
+
+    // Retorna rapidamente se o download demorar mais de 6s
+    const timeoutPromise = new Promise(resolve => setTimeout(() => resolve("TIMEOUT"), 6000));
+    const result = await Promise.race([downloadPromise, timeoutPromise]);
+    
+    if (result === "TIMEOUT") {
+      console.warn(`[WARN] Timeout 6s atingido em resolveInfoHash para ${httpLink.slice(0,50)}... (Download continua em background)`);
+      return null;
     }
+    return result;
   }
 
   if (fallbackHash) return { infoHash: fallbackHash, files: null, buffer: null };
