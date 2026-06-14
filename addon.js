@@ -1350,7 +1350,7 @@ async function markTorrentDownloadFailed(link) {
   await Promise.allSettled(keys.map(key => rc.set(key, "1", TORRENT_FAILURE_TTL)));
 }
 
-async function resolveInfoHash(r) {
+async function resolveInfoHash(r, reqCtx = {}) {
   let fallbackHash = r.InfoHash ? r.InfoHash.toLowerCase() : null;
   let magnetHash   = r.MagnetUri ? extractInfoHash(r.MagnetUri) : null;
   const httpLink   = (r.Link && !r.Link.startsWith("magnet:")) ? r.Link : null;
@@ -1445,6 +1445,7 @@ async function resolveInfoHash(r) {
     
     if (result === "TIMEOUT") {
       console.warn(`[WARN] Timeout 6s atingido em resolveInfoHash para ${httpLink.slice(0,50)}... (Download continua em background)`);
+      reqCtx.hasTimedOut = true;
       return null;
     }
     return result;
@@ -2269,6 +2270,7 @@ app.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {
       .slice(0, (prefs.maxResults || 20) * 3);
 
     // Resolve infohashes (ou preserva link .torrent para o StremThru caso falhe)
+    const reqCtx = { hasTimedOut: false };
     const withHashes = (await (async () => {
       const results2 = new Array(candidates.length).fill(null);
       const CONC = 8;
@@ -2277,7 +2279,7 @@ app.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {
         while (idx < candidates.length) {
           const i = idx++;
           const cand = candidates[i];
-          const resolved = await resolveInfoHash(cand);
+          const resolved = await resolveInfoHash(cand, reqCtx);
           if (resolved?.infoHash) {
             results2[i] = { ...cand, _resolved: resolved };
           } else if (cand.MagnetUri || cand.Link) {
@@ -2324,7 +2326,11 @@ app.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {
     }).filter(Boolean);
 
     console.log(`[Internal] ${type}/${id}: ${streams.length} streams P2P para StremThru`);
-    res.set("Cache-Control", "public, max-age=60, s-maxage=300");
+    if (reqCtx.hasTimedOut) {
+      res.set("Cache-Control", "public, max-age=5, s-maxage=5");
+    } else {
+      res.set("Cache-Control", "public, max-age=60, s-maxage=300");
+    }
     res.json({ streams });
   } catch (err) {
     console.error(`[Internal] Erro: ${err.message}`);
@@ -3045,6 +3051,7 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
     streamWaiters.delete(streamCacheKey);
   };
   const _t0 = Date.now();
+  const reqCtx = { hasTimedOut: false };
 
   try {
     const { parsed, displayTitle, aliases = [], queries, episode, year, search } = await buildQueries(type, id);
@@ -3129,7 +3136,7 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
           async function _worker() {
             while (_idx < _stCandidates.length) {
               const i = _idx++;
-              const resolved = await resolveInfoHash(_stCandidates[i]);
+              const resolved = await resolveInfoHash(_stCandidates[i], reqCtx);
               _res[i] = resolved?.infoHash ? { ..._stCandidates[i], _resolved: resolved } : null;
             }
           }
@@ -3509,7 +3516,7 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
             continue;
           }
           
-          const resolved = await resolveInfoHash(candidate);
+          const resolved = await resolveInfoHash(candidate, reqCtx);
           results[i] = resolved?.infoHash ? { ...candidate, _resolved: resolved } : null;
         }
       }
@@ -4133,7 +4140,8 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
     console.log(`=========================================\n`);
     // Salva streams resolvidos no cache (TTL 3h) — só se tiver resultados
     if (finalStreams.length > 0) {
-      rc.set(streamCacheKey, JSON.stringify(finalStreams), 10800).catch(() => {});
+      const ttl = reqCtx.hasTimedOut ? 5 : 10800; // 5 segundos se incompleto, 3 horas se completo
+      rc.set(streamCacheKey, JSON.stringify(finalStreams), ttl).catch(() => {});
     }
     console.log(`[DEBUG] Provider retornou: ${results.length} | Candidatos: ${candidates.length} | Com hash: ${withHashes.length} | Dedupe: ${dedupedWithHashes.length} | Final: ${finalStreams.length}`);
     console.log(`[PERF] total=${Date.now() - _t0}ms`);
