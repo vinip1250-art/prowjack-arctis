@@ -1930,6 +1930,9 @@ async function jackettSearch(plan, indexers, prefs) {
   fastPhaseActive = false;
   const fastFlat    = [...resultsByIndexer.values()].flat();
   const fastDeduped = prefs.dedupe !== false ? dedupeResults(fastFlat) : fastFlat;
+  if (resultsByIndexer.size < indexers.length) {
+    fastDeduped._incomplete = true;
+  }
   console.log(`Conclusao da janela rapida: ${fastFlat.length} brutos -> ${fastDeduped.length} ${prefs.dedupe !== false ? 'deduplicados' : 'resultados'}`);
 
   // Processamento em background do que sobrar
@@ -2254,6 +2257,8 @@ app.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {
     const plan = await buildQueries(type, id);
     const indexers = await resolveSearchIndexers(prefs, parsed.isAnime);
     const results  = await jackettSearch({ parsed, queries: plan.queries, search: plan.search }, indexers, prefs);
+    const reqCtx = { hasTimedOut: false };
+    if (results._incomplete) reqCtx.hasTimedOut = true;
 
     const priorityLang = prefs.priorityLang ?? "pt-br";
     const candidates = results
@@ -2278,7 +2283,6 @@ app.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {
       .slice(0, (prefs.maxResults || 20) * 3);
 
     // Resolve infohashes (ou preserva link .torrent para o StremThru caso falhe)
-    const reqCtx = { hasTimedOut: false };
     const withHashes = (await (async () => {
       const results2 = new Array(candidates.length).fill(null);
       const CONC = 8;
@@ -3095,6 +3099,7 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
           : Promise.resolve([]),
         jackettSearch({ parsed, queries, search }, indexersForFallback, prefs),
       ]);
+      if (jackettResults._incomplete) reqCtx.hasTimedOut = true;
       console.log(`[PERF] stremthru=${Date.now() - _stStart}ms`);
       console.log(`[STREMTHRU] ${proxyStreams.length} streams do proxy | ${jackettResults.length} do Jackett`);
 
@@ -3371,6 +3376,7 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
       // Busca Jackett
       const _tSearch = Date.now();
       const jackettResults = await jackettSearch({ parsed, queries, search }, indexers, prefs);
+      if (jackettResults._incomplete) reqCtx.hasTimedOut = true;
       console.log(`[PERF] search=${Date.now() - _tSearch}ms (${jackettResults.length} resultados)`);
       results = [...rssMatchedResults, ...jackettResults];
       if (rssMatchedResults.length) {
