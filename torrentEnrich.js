@@ -99,7 +99,36 @@ function extractInfoRaw(buf) {
   return null;
 }
 
-function injectTrackers(buffer, extraTrackers = EXTRA_TRACKERS) {
+let DYNAMIC_TRACKERS = [...EXTRA_TRACKERS];
+const axios = require("axios");
+
+async function updateDynamicTrackers() {
+  const urls = [
+    "https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_best_ip.txt",
+    "https://cdn.jsdelivr.net/gh/ngosang/trackerslist@master/trackers_best_ip.txt",
+    "https://ngosang.github.io/trackerslist/trackers_best_ip.txt"
+  ];
+  for (const url of urls) {
+    try {
+      const res = await axios.get(url, { timeout: 10000 });
+      if (res.status === 200 && res.data) {
+        const trackers = res.data.split("\n").map(t => t.trim()).filter(Boolean);
+        if (trackers.length > 0) {
+          DYNAMIC_TRACKERS = [...new Set([...EXTRA_TRACKERS, ...trackers])];
+          console.log(`[torrentEnrich] Trackers atualizados: ${DYNAMIC_TRACKERS.length} no total`);
+          return;
+        }
+      }
+    } catch (e) {}
+  }
+}
+
+// Start background update
+updateDynamicTrackers().catch(() => {});
+setInterval(updateDynamicTrackers, 12 * 60 * 60 * 1000);
+
+function injectTrackers(buffer, extraTrackers = null) {
+  if (!extraTrackers) extraTrackers = DYNAMIC_TRACKERS;
   try {
     if (!Buffer.isBuffer(buffer) || buffer.length > MAX_TORRENT_SIZE) {
       if (buffer?.length > MAX_TORRENT_SIZE) console.warn(`[torrentEnrich] Torrent muito grande (${buffer.length} bytes), ignorando enriquecimento`);
@@ -125,7 +154,7 @@ function injectTrackers(buffer, extraTrackers = EXTRA_TRACKERS) {
 
     const infoRaw = extractInfoRaw(buffer);
     const newTorrent = {
-      "announce": allTrackers[0] || EXTRA_TRACKERS[0],
+      "announce": allTrackers[0] || extraTrackers[0],
       "announce-list": allTrackers.map(t => [t]),
     };
     for (const key of Object.keys(torrent)) {
@@ -159,4 +188,8 @@ function extractTrackers(buffer) {
   } catch { return []; }
 }
 
-module.exports = { injectTrackers, extractTrackers, EXTRA_TRACKERS };
+module.exports = { 
+  injectTrackers, 
+  extractTrackers, 
+  get EXTRA_TRACKERS() { return DYNAMIC_TRACKERS; }
+};
