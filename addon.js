@@ -3123,28 +3123,26 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
       // Constrói streams finais combinando os dois resultados
       const combined = [];
 
-      // Se proxy retornou stremThruProxy=true, formatamos os nomes e mantemos
       const stStreams = proxyStreams.map(s => {
         let newName = s.name || "";
-        newName = newName.replace(/StremThru/i, prefs.addonName || "ProwJack");
         const lowName = newName.toLowerCase();
         let tag = "";
-        if (lowName.includes("torbox")) { newName = newName.replace(/torbox/gi, "").trim(); tag = "[TB]"; }
-        else if (lowName.includes("realdebrid") || lowName.includes("real-debrid")) { newName = newName.replace(/real-?debrid/gi, "").trim(); tag = "[RD]"; }
-        else if (lowName.includes("alldebrid")) { newName = newName.replace(/alldebrid/gi, "").trim(); tag = "[AD]"; }
-        else if (lowName.includes("premiumize")) { newName = newName.replace(/premiumize/gi, "").trim(); tag = "[PM]"; }
+        if (lowName.includes("torbox") || lowName.includes("[tb]")) tag = "[TB]";
+        else if (lowName.includes("realdebrid") || lowName.includes("real-debrid") || lowName.includes("[rd]")) tag = "[RD]";
+        else if (lowName.includes("alldebrid") || lowName.includes("[ad]")) tag = "[AD]";
+        else if (lowName.includes("premiumize") || lowName.includes("[pm]")) tag = "[PM]";
         
-        if (!newName.includes("⚡️") && !newName.includes("⬇️")) {
-          const parts = newName.split("\n");
-          if (parts.length > 1) {
-            parts[1] = `⚡️ ${parts[1]}`;
-            newName = parts.join("\n");
-          } else {
-            newName = `${prefs.addonName || "ProwJack"}\n⚡️ ${newName}`;
-          }
+        let addonLabel = prefs.addonName || "ProwJack";
+        let cacheEmoji = s.name?.includes("⬇️") ? "⬇️" : "⚡️";
+        const topName = tag ? `${tag} ${addonLabel} ${cacheEmoji}` : `${addonLabel} ${cacheEmoji}`;
+        
+        let desc = s.description || s.title || "";
+        const filename = s.behaviorHints?.filename;
+        if (filename && !desc.includes(filename)) {
+          desc += `\n📂 ${filename}`;
         }
-        if (tag && !newName.includes(tag)) newName += ` ${tag}`;
-        return { ...s, name: newName, _sourceType: "debrid", _cached: true };
+        
+        return { ...s, name: topName, description: desc.trim(), _sourceType: "debrid", _cached: true };
       });
       combined.push(...stStreams);
 
@@ -3201,26 +3199,30 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
           }
           const sources = (trackerList.length ? trackerList : EXTRA_TRACKERS)
             .map(t => `tracker:${t}`).concat(`dht:${resolved.infoHash}`);
+            
+          const isPrivateTracker = !r.MagnetUri && !!resolved.buffer;
+          const fallbackTitle = (r.Title && !r.Title.includes('\n')) ? r.Title : "";
+          const displayFileName = r._scrapStream?._filename || fallbackTitle;
+          const filenameLine = displayFileName ? `📂 ${displayFileName}` : "";
+            
+          const p2pName = `${prefs.addonName || "ProwJack"}\n⬇️ Links`;
           const p2pStream = {
-            name, description, infoHash: resolved.infoHash, sources,
+            name: p2pName, 
+            description: [description, filenameLine, isPrivateTracker ? "🔒 Tracker Privado" : ""].filter(Boolean).join("\n"),
+            infoHash: resolved.infoHash, sources,
             _sourceType: "p2p", _priorityIndexer: !!r._priorityIndexer,
-            behaviorHints: { notWebReady: false, bingeGroup: `prowjack|${resolved.infoHash}` },
+            behaviorHints: { filename: displayFileName, notWebReady: false, bingeGroup: `prowjack|${resolved.infoHash}` },
           };
           const streams = [p2pStream];
 
           const qbitCreds = null;
-          const qbitEnabledForPrefs = shouldOfferQbitForResult(prefs, false, qbitCreds);
-          const isPrivateTracker = !r.MagnetUri && !!resolved.buffer;
+          const qbitEnabledForPrefs = shouldOfferQbitForResult(prefs, isPrivateTracker, qbitCreds);
           if (qbitEnabledForPrefs && resolved.infoHash) {
             let torrentB64 = null;
             if (resolved.buffer) {
               try { torrentB64 = injectTrackers(resolved.buffer).toString("base64"); }
               catch { torrentB64 = resolved.buffer.toString("base64"); }
             }
-            const publicBase  = getPublicBase(req);
-            const fallbackTitle = (r.Title && !r.Title.includes('\n')) ? r.Title : "";
-            const displayFileName = r._scrapStream?._filename || fallbackTitle;
-            const filenameLine = displayFileName ? `📂 ${displayFileName}` : "";
             const jobToken = await saveQbitJob({
               infoHash: resolved.infoHash,
               link:     (r.Link && !r.Link.startsWith("magnet:")) ? r.Link : null,
@@ -3228,6 +3230,7 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
               fileIdx:  null, fileName: null, torrentB64,
             });
             
+            const publicBase  = getPublicBase(req);
             const qbitName = `${prefs.addonName || "ProwJack"}\n⬇️ Links [QB]`;
             const qbitStream = {
               name: qbitName,
