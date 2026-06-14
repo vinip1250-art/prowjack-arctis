@@ -330,21 +330,15 @@ async function saveStoredConfig(prefs) {
   return `cfg_${id}`;
 }
 
-async function buildStremThruProxyManifestUrl(req, prefs) {
+function buildStremThruProxyManifestUrl(req, prefs, userConfig) {
   if (!prefs?.stConfig?.url || !Array.isArray(prefs.stConfig.stores) || !prefs.stConfig.stores.length) {
     return null;
   }
-  const { stConfig, debrid, debridConfig, ...upstreamPrefs } = prefs;
-  upstreamPrefs.enableP2P = true;
-  upstreamPrefs.debrid = false;
-  delete upstreamPrefs.stConfig;
-  delete upstreamPrefs.debridConfig;
-
-  const upstreamRef = await saveStoredConfig(upstreamPrefs);
-  const upstreamManifest = `${getPublicBase(req)}/${upstreamRef}/manifest.json`;
+  // Usa a rota interna como upstream — evita salvar uma cópia das prefs
+  const internalManifest = `${getPublicBase(req)}/internal/${userConfig}/manifest.json`;
   const storeCodeMap = { torbox: "tb", realdebrid: "rd", alldebrid: "ad", debridlink: "dl", premiumize: "pm", offcloud: "oc" };
   const wrapEncoded = Buffer.from(JSON.stringify({
-    upstreams: [{ u: upstreamManifest }],
+    upstreams: [{ u: internalManifest }],
     stores: prefs.stConfig.stores.map(s => ({ c: storeCodeMap[s.c] || s.c, t: s.t })),
     name: prefs.addonName || "ProwJack [ST]",
   }), "utf8").toString("base64");
@@ -2187,17 +2181,131 @@ function sendConfigurePage(res) {
 app.get("/configure", (_, res) => sendConfigurePage(res));
 app.get("/:userConfig/configure", (_, res) => sendConfigurePage(res));
 app.get("/", (_, res) => res.redirect("/configure"));
+// ─── Rota interna usada como upstream pelo StremThru ─────────────────────────
+// O StremThru chama /internal/:userConfig/stream/:type/:id.json para obter os
+// hashes P2P do Jackett e depois resolve via debrid nativamente.
+// O Stremio continua instalado com o addon do ProwJack (não do StremThru).
+app.get("/internal/:userConfig/manifest.json", async (req, res) => {
+  const prefs = await resolvePrefs(req.params.userConfig);
+  const name  = prefs.addonName || "ProwJack";
+  const types = [...new Set((prefs.categories || ["movie", "series"]).map(c => c === "movies" ? "movie" : c === "anime" ? "series" : c))];
+  res.json({
+    id: `org.prowjack.internal.${req.params.userConfig}`,
+    version: "3.2.2",
+    name: `${name} Internal`,
+    description: "Upstream interno do ProwJack para StremThru",
+    logo: `${getPublicBase(req)}/logo.svg`,
+    types,
+    resources: [{ name: "stream", types, idPrefixes: ["tt", "kitsu:"] }],
+    catalogs: [],
+    behaviorHints: { configurable: false, configurationRequired: false },
+  });
+});
+
+app.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {
+  try {
+    const { userConfig, type, id } = req.params;
+    // Carrega prefs mas força modo P2P puro (sem debrid/StremThru) para ser upstream
+    const rawPrefs = await resolvePrefs(userConfig);
+    const prefs = { ...rawPrefs, debrid: false, stConfig: null, enableP2P: true };
+    delete prefs.debridConfig;
+    delete prefs.stConfig;
+
+    const parsed = await parseStreamId(type, id);
+    if (!parsed) return res.json({ streams: [] });
+
+    const queries = await buildQueries(type, id);
+    const indexers = await resolveSearchIndexers(prefs, parsed.isAnime);
+    const results  = await jackettSearch({ parsed, queries, search: queries[0] }, indexers, prefs);
+
+    const priorityLang = prefs.priorityLang ?? "pt-br";
+    const candidates = results
+      .filter(r => r?.InfoHash || r?.MagnetUri || r?.Link)
+      .filter(r => {
+        const isPrio = isPriorityIndexerResult(r, prefs);
+        if (isPrio) r._priorityIndexer = true;
+        return isPrio || !prefs.skipBadReleases || !BAD_RE.test(r.Title || "");
+      })
+      .filter(r => r._priorityIndexer || type !== "movie" || !looksLikeEpisodeRelease(r.Title || ""))
+      .filter(r => {
+        if (r._priorityIndexer) return true;
+        if (prefs.keywordBoost && matchesKeywordBoost(r.Title || "", prefs.keywordBoost)) return true;
+        if (!prefs.onlyDubbed || !priorityLang) return true;
+        const langs = getLangs(r.Title || "", parsed.isAnime);
+        return langs.some(l => l.code === priorityLang);
+      })
+      .sort((a, b) =>
+        (((b._priorityIndexer ? 1 : 0) * 5000000) + score(b, prefs.weights, parsed.isAnime, priorityLang)) -
+        (((a._priorityIndexer ? 1 : 0) * 5000000) + score(a, prefs.weights, parsed.isAnime, priorityLang))
+      )
+      .slice(0, (prefs.maxResults || 20) * 3);
+
+    // Resolve infohashes (ou preserva link .torrent para o StremThru caso falhe)
+    const withHashes = (await (async () => {
+      const results2 = new Array(candidates.length).fill(null);
+      const CONC = 8;
+      let idx = 0;
+      async function worker() {
+        while (idx < candidates.length) {
+          const i = idx++;
+          const cand = candidates[i];
+          const resolved = await resolveInfoHash(cand);
+          if (resolved?.infoHash) {
+            results2[i] = { ...cand, _resolved: resolved };
+          } else if (cand.MagnetUri || cand.Link) {
+            // Se falhou em resolver (ex: timeout) mas tem link, mantém para o StremThru
+            results2[i] = { ...cand, _resolved: { infoHash: null, url: cand.MagnetUri || cand.Link } };
+          }
+        }
+      }
+      await Promise.all(Array.from({ length: CONC }, worker));
+      return results2;
+    })()).filter(Boolean);
+
+    const maxOut = prefs.maxResults || 20;
+    const streams = withHashes.slice(0, maxOut).map(r => {
+      const resolved = r._resolved;
+      const indexerName = r._indexerName || r.Tracker || r.TrackerId || r.Indexer || "Unknown";
+      const { name, description } = formatStream(r, indexerName, parsed.isAnime, prefs, true, {});
+      
+      const streamObj = {
+        name, description,
+        behaviorHints: { notWebReady: false },
+      };
+
+      if (resolved.infoHash) {
+        let trackerList = [];
+        if (resolved.buffer) trackerList = extractTrackers(resolved.buffer);
+        else if (r.MagnetUri) {
+          for (const m of (r.MagnetUri.matchAll(/[&?]tr=([^&]+)/g) || [])) {
+            try { trackerList.push(decodeURIComponent(m[1])); } catch {}
+          }
+        }
+        const sources = (trackerList.length ? trackerList : EXTRA_TRACKERS)
+          .map(t => `tracker:${t}`).concat(`dht:${resolved.infoHash}`);
+        
+        streamObj.infoHash = resolved.infoHash;
+        streamObj.sources = sources;
+        streamObj.behaviorHints.bingeGroup = `prowjack|${resolved.infoHash}`;
+      } else if (resolved.url) {
+        streamObj.url = resolved.url;
+      } else {
+        return null;
+      }
+      return streamObj;
+    }).filter(Boolean);
+
+    console.log(`[Internal] ${type}/${id}: ${streams.length} streams P2P para StremThru`);
+    res.set("Cache-Control", "public, max-age=60, s-maxage=300");
+    res.json({ streams });
+  } catch (err) {
+    console.error(`[Internal] Erro: ${err.message}`);
+    res.json({ streams: [] });
+  }
+});
+
 app.get("/:userConfig/manifest.json", async (req, res) => {
   const prefs  = await resolvePrefs(req.params.userConfig);
-
-  // Modo StremThru: o manifest real é o do proxy — redireciona diretamente.
-  // Isso faz o Stremio instalar o addon StremThru (com streams debrid) em vez do ProwJack P2P.
-  if (prefs.stConfig) {
-    const proxyManifestUrl = await buildStremThruProxyManifestUrl(req, prefs).catch(() => null);
-    if (proxyManifestUrl) {
-      return res.redirect(302, proxyManifestUrl);
-    }
-  }
 
   const types  = [...new Set((prefs.categories || ["movie","series"]).map(c => c==="movies"?"movie":c==="anime"?"series":c))];
   const name   = prefs.addonName || "ProwJack";
@@ -2931,110 +3039,126 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
     if (isStremThruMode) {
       const _stStart = Date.now();
       const maxOut = prefs.maxResults || 20;
-      const proxyManifestUrl = await buildStremThruProxyManifestUrl(req, prefs);
+      const proxyManifestUrl = buildStremThruProxyManifestUrl(req, prefs, req.params.userConfig);
+      const addonName = prefs.addonName || "ProwJack";
 
-      // Roda StremThru e busca Jackett em PARALELO.
-      // Se StremThru responder com streams, usa-os. Se falhar/timeout, usa os do Jackett como fallback.
+      // Roda StremThru (resolve debrid) e Jackett em PARALELO — igual ao IndexaBR
+      // StremThru chama /internal/:userConfig/stream que busca no Jackett e retorna P2P
+      // O StremThru então resolve os hashes P2P via debrid e retorna links diretos
       const indexersForFallback = await resolveSearchIndexers(prefs, parsed.isAnime);
-      const [proxyStreams, jackettFallbackResults] = await Promise.all([
+      const [proxyStreams, jackettResults] = await Promise.all([
         proxyManifestUrl
           ? fetchScrapStreams(proxyManifestUrl, type, id, { timeout: STREMTHRU_PROXY_TIMEOUT_MS, label: "STREMTHRU" })
           : Promise.resolve([]),
         jackettSearch({ parsed, queries, search }, indexersForFallback, prefs),
       ]);
       console.log(`[PERF] stremthru=${Date.now() - _stStart}ms`);
+      console.log(`[STREMTHRU] ${proxyStreams.length} streams do proxy | ${jackettResults.length} do Jackett`);
 
-      if (proxyStreams.length) {
-        console.log(`[STREMTHRU] ${proxyStreams.length} streams do proxy retornados`);
-        const finalProxyStreams = proxyStreams.slice(0, maxOut).map(s => {
-          if (!s.name || /^ProwJack\b/i.test(s.name)) {
-            s.name = `${prefs.addonName || "ProwJack"}\n${s.name?.split("\n").slice(1).join("\n") || "⚡ Links [ST]"}`;
-          }
-          if (s.behaviorHints?.notWebReady) s.behaviorHints.notWebReady = false;
-          delete s._cached; delete s._sourceType; delete s._scrapSource;
-          delete s._stremThruProxy; delete s._title; delete s._seeders;
-          delete s._sizeGb; delete s._sizeBytes;
-          return s;
-        });
-        await rc.set(streamCacheKey, JSON.stringify(finalProxyStreams), 10800).catch(() => {});
-        console.log(`StremThru listados: Enviando ${finalProxyStreams.length} streams!`);
-        console.log(`=========================================\n`);
-        releaseLock(finalProxyStreams);
-        return res.json({ streams: finalProxyStreams });
-      }
+      // Constrói streams finais combinando os dois resultados
+      const combined = [];
 
-      // StremThru falhou ou retornou vazio — usa resultados do Jackett como fallback
-      console.log(`[STREMTHRU] Proxy não retornou streams — usando fallback Jackett (${jackettFallbackResults.length} brutos)`);
-      // Continua o fluxo normal com jackettFallbackResults como results
-      // (reutiliza o código abaixo injetando os resultados)
-      const _stFallbackResults = jackettFallbackResults;
-
-      // ── Bloco de filtros/resolução do fallback StremThru (espelho do fluxo normal) ──
-      const _stPriorityLang = prefs.priorityLang ?? "pt-br";
-      const _stCandidates = _stFallbackResults
-        .filter(r => r?.InfoHash || r?.MagnetUri || r?.Link)
-        .filter(r => {
-          const isPrio = isPriorityIndexerResult(r, prefs);
-          if (isPrio) r._priorityIndexer = true;
-          return isPrio || !prefs.skipBadReleases || !BAD_RE.test(r.Title || "");
-        })
-        .filter(r => r._priorityIndexer || type !== "movie" || !looksLikeEpisodeRelease(r.Title || ""))
-        .filter(r => {
-          if (prefs.onlyDubbed && _stPriorityLang) {
-            const langs = getLangs(r.Title || "", parsed.isAnime);
-            const isMulti = /(multi|dual)[-.\\s]?(audio)?/i.test(r.Title || "");
-            const hasLang = langs.some(l => l.code === _stPriorityLang) || isMulti;
-            if (!hasLang) return false;
-          }
-          if (r._priorityIndexer) return true;
-          return true;
-        })
-        .map(r => {
-          r._originalScore = ((r._priorityIndexer ? 1 : 0) * 5000000) + score(r, prefs.weights, parsed.isAnime, _stPriorityLang);
-          return r;
-        })
-        .sort((a, b) => b._originalScore - a._originalScore)
-        .slice(0, maxOut * 3);
-
-      console.log(`[DEBUG] StremThru fallback: ${_stFallbackResults.length} brutos → ${_stCandidates.length} candidatos`);
-
-      const _stWithHashes = (await (async () => {
-        const _res = new Array(_stCandidates.length).fill(null);
-        const CONC = 10;
-        let _idx = 0;
-        async function _worker() {
-          while (_idx < _stCandidates.length) {
-            const i = _idx++;
-            const resolved = await resolveInfoHash(_stCandidates[i]);
-            _res[i] = resolved?.infoHash ? { ..._stCandidates[i], _resolved: resolved } : null;
-          }
+      // 1) Streams debrid do StremThru — links prontos para reprodução
+      const stStreams = proxyStreams.map(s => {
+        if (!s.name || /^ProwJack\b/i.test(s.name)) {
+          s.name = `${addonName}\n${s.name?.split("\n").slice(1).join("\n") || "⚡ Links [ST]"}`;
         }
-        await Promise.all(Array.from({ length: CONC }, _worker));
-        return _res;
-      })()).filter(Boolean);
+        if (s.behaviorHints?.notWebReady) s.behaviorHints.notWebReady = false;
+        s._cached = true;
+        s._sourceType = "debrid";
+        return s;
+      });
+      combined.push(...stStreams);
 
-      const _stStreams = _stWithHashes.slice(0, maxOut).map(r => {
-        const resolved = r._resolved;
-        if (!resolved.infoHash) return null;
-        const indexerName = r._indexerName || r.Tracker || r.TrackerId || r.Indexer || "Unknown";
-        const { name, description } = formatStream(r, indexerName, parsed.isAnime, prefs, true, streamMeta);
-        let trackerList = [];
-        if (resolved.buffer) { trackerList = extractTrackers(resolved.buffer); }
-        else if (r.MagnetUri) { for (const m of (r.MagnetUri.matchAll(/[&?]tr=([^&]+)/g) || [])) { try { trackerList.push(decodeURIComponent(m[1])); } catch {} } }
-        const sources = (trackerList.length ? trackerList : EXTRA_TRACKERS).map(t => `tracker:${t}`).concat(`dht:${resolved.infoHash}`);
-        return { name, description, infoHash: resolved.infoHash, sources, behaviorHints: { notWebReady: false } };
-      }).filter(Boolean);
+      // 2) Streams P2P do Jackett como complemento (se StremThru não tiver tudo)
+      if (prefs.enableP2P !== false) {
+        const _stPriorityLang = prefs.priorityLang ?? "pt-br";
+        const _stCandidates = jackettResults
+          .filter(r => r?.InfoHash || r?.MagnetUri || r?.Link)
+          .filter(r => {
+            const isPrio = isPriorityIndexerResult(r, prefs);
+            if (isPrio) r._priorityIndexer = true;
+            return isPrio || !prefs.skipBadReleases || !BAD_RE.test(r.Title || "");
+          })
+          .filter(r => r._priorityIndexer || type !== "movie" || !looksLikeEpisodeRelease(r.Title || ""))
+          .filter(r => {
+            if (r._priorityIndexer) return true;
+            if (prefs.keywordBoost && matchesKeywordBoost(r.Title || "", prefs.keywordBoost)) return true;
+            if (!prefs.onlyDubbed || !_stPriorityLang) return true;
+            const langs = getLangs(r.Title || "", parsed.isAnime);
+            return langs.some(l => l.code === _stPriorityLang);
+          })
+          .sort((a, b) =>
+            (((b._priorityIndexer ? 1 : 0) * 5000000) + score(b, prefs.weights, parsed.isAnime, _stPriorityLang)) -
+            (((a._priorityIndexer ? 1 : 0) * 5000000) + score(a, prefs.weights, parsed.isAnime, _stPriorityLang))
+          )
+          .slice(0, maxOut * 3);
 
-      const _stFinal = _stStreams.slice(0, maxOut);
-      console.log(`[DEBUG] StremThru fallback Jackett: ${_stFinal.length} streams finais`);
-      if (_stFinal.length > 0) {
-        await rc.set(streamCacheKey, JSON.stringify(_stFinal), 10800).catch(() => {});
+        const _stWithHashes = (await (async () => {
+          const _res = new Array(_stCandidates.length).fill(null);
+          const CONC = 8;
+          let _idx = 0;
+          async function _worker() {
+            while (_idx < _stCandidates.length) {
+              const i = _idx++;
+              const resolved = await resolveInfoHash(_stCandidates[i]);
+              _res[i] = resolved?.infoHash ? { ..._stCandidates[i], _resolved: resolved } : null;
+            }
+          }
+          await Promise.all(Array.from({ length: CONC }, _worker));
+          return _res;
+        })()).filter(Boolean);
+
+        const p2pStreams = _stWithHashes.slice(0, maxOut).map(r => {
+          const resolved = r._resolved;
+          if (!resolved.infoHash) return null;
+          const indexerName = r._indexerName || r.Tracker || r.TrackerId || r.Indexer || "Unknown";
+          const { name, description } = formatStream(r, indexerName, parsed.isAnime, prefs, true, streamMeta);
+          let trackerList = [];
+          if (resolved.buffer) trackerList = extractTrackers(resolved.buffer);
+          else if (r.MagnetUri) {
+            for (const m of (r.MagnetUri.matchAll(/[&?]tr=([^&]+)/g) || [])) {
+              try { trackerList.push(decodeURIComponent(m[1])); } catch {}
+            }
+          }
+          const sources = (trackerList.length ? trackerList : EXTRA_TRACKERS)
+            .map(t => `tracker:${t}`).concat(`dht:${resolved.infoHash}`);
+          return {
+            name, description, infoHash: resolved.infoHash, sources,
+            _sourceType: "p2p", _priorityIndexer: !!r._priorityIndexer,
+            behaviorHints: { notWebReady: false, bingeGroup: `prowjack|${resolved.infoHash}` },
+          };
+        }).filter(Boolean);
+        combined.push(...p2pStreams);
       }
-      console.log(`[STREMTHRU] Fallback: Enviando ${_stFinal.length} streams P2P!`);
+
+      // Ordena: debrid primeiro, depois P2P
+      combined.sort((a, b) => {
+        const da = a._cached ? 0 : (a._sourceType === "debrid" ? 1 : 2);
+        const db = b._cached ? 0 : (b._sourceType === "debrid" ? 1 : 2);
+        if (da !== db) return da - db;
+        if (a._priorityIndexer && !b._priorityIndexer) return -1;
+        if (!a._priorityIndexer && b._priorityIndexer) return 1;
+        return 0;
+      });
+
+      // Remove campos internos antes de enviar ao Stremio
+      const finalStreams = combined.slice(0, maxOut).map(s => {
+        delete s._cached; delete s._sourceType; delete s._scrapSource;
+        delete s._stremThruProxy; delete s._title; delete s._seeders;
+        delete s._sizeGb; delete s._sizeBytes; delete s._priorityIndexer;
+        return s;
+      });
+
+      if (finalStreams.length > 0) {
+        await rc.set(streamCacheKey, JSON.stringify(finalStreams), 10800).catch(() => {});
+      }
+      console.log(`[STREMTHRU] Enviando ${finalStreams.length} streams (${stStreams.length} debrid + P2P)`);
       console.log(`=========================================\n`);
-      releaseLock(_stFinal);
-      return res.json({ streams: _stFinal });
+      releaseLock(finalStreams);
+      return res.json({ streams: finalStreams });
     }
+
 
     const indexers     = await resolveSearchIndexers(prefs, parsed.isAnime);
 
@@ -3773,7 +3897,7 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
     const allStreams = resolvedAll.flat(2).filter(Boolean);
 
     if (prefs.stConfig) {
-      const proxyManifestUrl = await buildStremThruProxyManifestUrl(req, prefs);
+      const proxyManifestUrl = buildStremThruProxyManifestUrl(req, prefs, req.params.userConfig);
       const proxyStreams = proxyManifestUrl
         ? await fetchScrapStreams(proxyManifestUrl, type, id, { timeout: STREMTHRU_PROXY_TIMEOUT_MS, label: "STREMTHRU" })
         : [];
