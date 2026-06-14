@@ -2214,9 +2214,9 @@ app.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {
     const parsed = await parseStreamId(type, id);
     if (!parsed) return res.json({ streams: [] });
 
-    const queries = await buildQueries(type, id);
+    const plan = await buildQueries(type, id);
     const indexers = await resolveSearchIndexers(prefs, parsed.isAnime);
-    const results  = await jackettSearch({ parsed, queries, search: queries[0] }, indexers, prefs);
+    const results  = await jackettSearch({ parsed, queries: plan.queries, search: plan.search }, indexers, prefs);
 
     const priorityLang = prefs.priorityLang ?? "pt-br";
     const candidates = results
