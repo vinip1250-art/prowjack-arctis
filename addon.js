@@ -175,7 +175,7 @@ const CACHE_VERSION = "v12-native-debrid";
 const STREAM_CACHE_VERSION = "v31-scrap-direct-cache";
 const TORRENT_DOWNLOAD_TIMEOUT_MS = 15000;
 const TORRENT_FAILURE_TTL = 10 * 60;
-const STREMTHRU_PROXY_TIMEOUT_MS = Math.max(3000, parseInt(process.env.STREMTHRU_PROXY_TIMEOUT_MS || "12000", 10) || 12000);
+const STREMTHRU_PROXY_TIMEOUT_MS = Math.max(3000, parseInt(process.env.STREMTHRU_PROXY_TIMEOUT_MS || "14000", 10) || 14000);
 const QB_EXTRA_SLOTS = Math.max(0, parseInt(process.env.QB_EXTRA_SLOTS || "5", 10) || 5);
 const MIN_STREAM_SEEDS = Math.max(0, parseInt(process.env.MIN_STREAM_SEEDS || process.env.P2P_MIN_SEEDS || process.env.P2P_MIN_SEEDERS || "1", 10) || 0);
 
@@ -2291,7 +2291,7 @@ app.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {
         (((b._priorityIndexer ? 1 : 0) * 5000000) + score(b, prefs.weights, parsed.isAnime, priorityLang)) -
         (((a._priorityIndexer ? 1 : 0) * 5000000) + score(a, prefs.weights, parsed.isAnime, priorityLang))
       )
-      .slice(0, (prefs.maxResults || 20) * 3);
+      .slice(0, prefs.maxResults || 20);
 
     // Resolve infohashes (ou preserva link .torrent para o StremThru caso falhe)
     const withHashes = (await (async () => {
