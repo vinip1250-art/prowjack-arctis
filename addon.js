@@ -3186,7 +3186,8 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
       });
 
       if (finalStreams.length > 0) {
-        await rc.set(streamCacheKey, JSON.stringify(finalStreams), 10800).catch(() => {});
+        const ttl = reqCtx.hasTimedOut ? 5 : 10800; // 5 segundos se incompleto
+        await rc.set(streamCacheKey, JSON.stringify(finalStreams), ttl).catch(() => {});
       }
       console.log(`[STREMTHRU] Enviando ${finalStreams.length} streams (${stStreams.length} debrid + P2P)`);
       console.log(`=========================================\n`);
