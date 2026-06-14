@@ -1350,6 +1350,8 @@ async function markTorrentDownloadFailed(link) {
   await Promise.allSettled(keys.map(key => rc.set(key, "1", TORRENT_FAILURE_TTL)));
 }
 
+const activeDownloads = new Map();
+
 async function resolveInfoHash(r, reqCtx = {}) {
   let fallbackHash = r.InfoHash ? r.InfoHash.toLowerCase() : null;
   let magnetHash   = r.MagnetUri ? extractInfoHash(r.MagnetUri) : null;
@@ -1385,59 +1387,65 @@ async function resolveInfoHash(r, reqCtx = {}) {
       }
     } catch {}
 
-    const downloadPromise = (async () => {
-      let _magnetRedirect = null;
-      try {
-        const res = await axios.get(httpLink, {
-          timeout: 25000, maxRedirects: 10, responseType: "arraybuffer",
-          maxContentLength: 8 * 1024 * 1024, validateStatus: s => s < 400,
-          headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
-          beforeRedirect: (options) => {
-            if (options.href?.startsWith("magnet:")) {
-              _magnetRedirect = options.href;
-              throw Object.assign(new Error("magnet_redirect"), { isMagnetRedirect: true });
+    let downloadPromise = activeDownloads.get(urlHashKey);
+    if (!downloadPromise) {
+      downloadPromise = (async () => {
+        let _magnetRedirect = null;
+        try {
+          const res = await axios.get(httpLink, {
+            timeout: 25000, maxRedirects: 10, responseType: "arraybuffer",
+            maxContentLength: 8 * 1024 * 1024, validateStatus: s => s < 400,
+            headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
+            beforeRedirect: (options) => {
+              if (options.href?.startsWith("magnet:")) {
+                _magnetRedirect = options.href;
+                throw Object.assign(new Error("magnet_redirect"), { isMagnetRedirect: true });
+              }
+            },
+          });
+          const finalUrl = res.request?.res?.responseUrl || "";
+          if (finalUrl.startsWith("magnet:")) {
+            const h = extractInfoHash(finalUrl);
+            if (h) rc.set(urlHashKey, h, 7 * 24 * 3600).catch(()=>{});
+            return h ? { infoHash: h, files: null, buffer: null } : null;
+          }
+          const buf = Buffer.from(res.data);
+          if (buf.length > 8 * 1024 * 1024) return null;
+          const bodyStr = buf.toString("utf8", 0, Math.min(buf.length, 200));
+          if (bodyStr.trimStart().startsWith("magnet:")) {
+            const h = extractInfoHash(bodyStr.trim());
+            if (h) rc.set(urlHashKey, h, 7 * 24 * 3600).catch(()=>{});
+            return h ? { infoHash: h, files: null, buffer: null } : null;
+          }
+          if (buf[0] === 0x64) {
+            const infoBuf = extractInfoBuf(buf);
+            if (infoBuf) {
+              const realHash = crypto.createHash("sha1").update(infoBuf).digest("hex");
+              rc.setBuffer(`torrent:${realHash}`, buf, 7 * 24 * 3600).catch(() => {});
+              rc.set(urlHashKey, realHash, 7 * 24 * 3600).catch(() => {});
+              return { infoHash: realHash, files: extractTorrentFiles(buf), buffer: buf };
             }
-          },
-        });
-        const finalUrl = res.request?.res?.responseUrl || "";
-        if (finalUrl.startsWith("magnet:")) {
-          const h = extractInfoHash(finalUrl);
-          if (h) rc.set(urlHashKey, h, 7 * 24 * 3600).catch(()=>{});
-          return h ? { infoHash: h, files: null, buffer: null } : null;
-        }
-        const buf = Buffer.from(res.data);
-        if (buf.length > 8 * 1024 * 1024) return null;
-        const bodyStr = buf.toString("utf8", 0, Math.min(buf.length, 200));
-        if (bodyStr.trimStart().startsWith("magnet:")) {
-          const h = extractInfoHash(bodyStr.trim());
-          if (h) rc.set(urlHashKey, h, 7 * 24 * 3600).catch(()=>{});
-          return h ? { infoHash: h, files: null, buffer: null } : null;
-        }
-        if (buf[0] === 0x64) {
-          const infoBuf = extractInfoBuf(buf);
-          if (infoBuf) {
-            const realHash = crypto.createHash("sha1").update(infoBuf).digest("hex");
-            rc.setBuffer(`torrent:${realHash}`, buf, 7 * 24 * 3600).catch(() => {});
-            rc.set(urlHashKey, realHash, 7 * 24 * 3600).catch(() => {});
-            return { infoHash: realHash, files: extractTorrentFiles(buf), buffer: buf };
           }
-        }
-        return null;
-      } catch (err) {
-        if (_magnetRedirect || err.isMagnetRedirect || err.cause?.isMagnetRedirect) {
-          const src = _magnetRedirect || err.cause?.magnetUrl;
-          const h   = src ? extractInfoHash(src) : null;
-          if (h) {
-            rc.set(urlHashKey, h, 7 * 24 * 3600).catch(()=>{});
-            return { infoHash: h, files: null, buffer: null };
+          return null;
+        } catch (err) {
+          if (_magnetRedirect || err.isMagnetRedirect || err.cause?.isMagnetRedirect) {
+            const src = _magnetRedirect || err.cause?.magnetUrl;
+            const h   = src ? extractInfoHash(src) : null;
+            if (h) {
+              rc.set(urlHashKey, h, 7 * 24 * 3600).catch(()=>{});
+              return { infoHash: h, files: null, buffer: null };
+            }
+          } else {
+            await markTorrentDownloadFailed(httpLink);
+            console.warn(`[WARN] Falha ao baixar torrent (${httpLink.slice(0,40)}...): ${err.message}`);
           }
-        } else {
-          await markTorrentDownloadFailed(httpLink);
-          console.warn(`[WARN] Falha ao baixar torrent (${httpLink.slice(0,40)}...): ${err.message}`);
+          return null;
+        } finally {
+          activeDownloads.delete(urlHashKey);
         }
-        return null;
-      }
-    })();
+      })();
+      activeDownloads.set(urlHashKey, downloadPromise);
+    }
 
     // Retorna rapidamente se o download demorar mais de 6s
     const timeoutPromise = new Promise(resolve => setTimeout(() => resolve("TIMEOUT"), 6000));
@@ -3144,7 +3152,7 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
           return _res;
         })()).filter(Boolean);
 
-        const p2pStreams = _stWithHashes.slice(0, maxOut).map(r => {
+        const p2pStreamsNested = await Promise.all(_stWithHashes.slice(0, maxOut).map(async r => {
           const resolved = r._resolved;
           if (!resolved.infoHash) return null;
           const indexerName = r._indexerName || r.Tracker || r.TrackerId || r.Indexer || "Unknown";
@@ -3158,12 +3166,48 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
           }
           const sources = (trackerList.length ? trackerList : EXTRA_TRACKERS)
             .map(t => `tracker:${t}`).concat(`dht:${resolved.infoHash}`);
-          return {
+          const p2pStream = {
             name, description, infoHash: resolved.infoHash, sources,
             _sourceType: "p2p", _priorityIndexer: !!r._priorityIndexer,
             behaviorHints: { notWebReady: false, bingeGroup: `prowjack|${resolved.infoHash}` },
           };
-        }).filter(Boolean);
+          const streams = [p2pStream];
+
+          const qbitCreds = null;
+          const qbitEnabledForPrefs = shouldOfferQbitForResult(prefs, false, qbitCreds);
+          const isPrivateTracker = !r.MagnetUri && !!resolved.buffer;
+          if (qbitEnabledForPrefs && resolved.infoHash) {
+            let torrentB64 = null;
+            if (resolved.buffer) {
+              try { torrentB64 = injectTrackers(resolved.buffer).toString("base64"); }
+              catch { torrentB64 = resolved.buffer.toString("base64"); }
+            }
+            const publicBase  = getPublicBase(req);
+            const fallbackTitle = (r.Title && !r.Title.includes('\n')) ? r.Title : "";
+            const displayFileName = r._scrapStream?._filename || fallbackTitle;
+            const filenameLine = displayFileName ? `📂 ${displayFileName}` : "";
+            const jobToken = await saveQbitJob({
+              infoHash: resolved.infoHash,
+              link:     (r.Link && !r.Link.startsWith("magnet:")) ? r.Link : null,
+              magnet:   buildMagnet(resolved.infoHash, r.MagnetUri, r.Title),
+              fileIdx:  null, fileName: null, torrentB64,
+            });
+            
+            const qbitName = `${prefs.addonName || "ProwJack"}\n⬇️ Links [QB]`;
+            const qbitStream = {
+              name: qbitName,
+              description: [description, filenameLine, isPrivateTracker ? "🔒 Tracker Privado" : ""].filter(Boolean).join("\n"),
+              url:   `${publicBase}/${req.params.userConfig}/qbit/${jobToken}`,
+              indexer: renameIndexer(indexerName),
+              _sourceType: "http", _priorityIndexer: !!r._priorityIndexer,
+              behaviorHints: { filename: displayFileName, bingeGroup: `prowjack|qbit|${resolved.infoHash}`, notWebReady: false },
+            };
+            streams.push(qbitStream);
+          }
+          return streams;
+        }));
+        
+        const p2pStreams = p2pStreamsNested.flat().filter(Boolean);
         combined.push(...p2pStreams);
       }
 
@@ -3177,8 +3221,24 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
         return 0;
       });
 
+      const isQbStream = s => s?._sourceType === "http" && typeof s.url === "string" && s.url.includes("/qbit/");
+      let normalPool = combined.filter(s => !isQbStream(s));
+      const limitedNormal = normalPool.slice(0, maxOut);
+      
+      const QB_EXTRA_SLOTS = prefs.qbExtraSlots ?? 5;
+      const normalKeys = new Set(limitedNormal.map(s => s.infoHash || s.behaviorHints?.bingeGroup || s.url).filter(Boolean));
+      const qbExtra = combined
+        .filter(isQbStream)
+        .filter(s => {
+          const key = s.infoHash || s.behaviorHints?.bingeGroup || s.url;
+          return !key || !normalKeys.has(key);
+        })
+        .slice(0, QB_EXTRA_SLOTS);
+
+      const finalStreamsCombined = [...limitedNormal, ...qbExtra];
+
       // Remove campos internos antes de enviar ao Stremio
-      const finalStreams = combined.slice(0, maxOut).map(s => {
+      const finalStreams = finalStreamsCombined.map(s => {
         delete s._cached; delete s._sourceType; delete s._scrapSource;
         delete s._stremThruProxy; delete s._title; delete s._seeders;
         delete s._sizeGb; delete s._sizeBytes; delete s._priorityIndexer;
