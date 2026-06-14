@@ -172,7 +172,7 @@ const rc = {
   },
 };
 const CACHE_VERSION = "v12-native-debrid";
-const STREAM_CACHE_VERSION = "v31-scrap-direct-cache";
+const STREAM_CACHE_VERSION = "v35-stremthru-name-preserve";
 const TORRENT_DOWNLOAD_TIMEOUT_MS = 15000;
 const TORRENT_FAILURE_TTL = 10 * 60;
 const STREMTHRU_PROXY_TIMEOUT_MS = Math.max(3000, parseInt(process.env.STREMTHRU_PROXY_TIMEOUT_MS || "14000", 10) || 14000);
@@ -346,7 +346,6 @@ function buildStremThruProxyManifestUrl(req, prefs, userConfig) {
 }
 
 function isQbitEnabledForPrefs(prefs, creds = null) {
-  if (prefs?.stConfig) return false;
   if (prefs?.enableP2P === false) return false;
   if (!["always", "private"].includes(String(prefs?.qbitMode || ""))) return false;
   return isQbitConfigured(creds);
@@ -719,7 +718,7 @@ function sanitizeUserPrefs(input = {}) {
   out.rdExcludeGroups = cleanString(src.rdExcludeGroups, 300);
   out.maxResultsPerIndexer = clampNumber(src.maxResultsPerIndexer, 0, 0, 200);
   out.enableP2P = src.enableP2P !== false;
-  out.qbitMode = ["off", "private", "always"].includes(src.qbitMode) ? src.qbitMode : "off";
+  out.qbitMode = ["off", "private", "always"].includes(src.qbitMode) ? src.qbitMode : "private";
   out.enableCatalog = src.enableCatalog !== false;
   out.rssIndexers = cleanStringArray(src.rssIndexers, 100, 120);
   out.token = cleanString(src.token, 200);
@@ -757,7 +756,7 @@ function sanitizeUserPrefs(input = {}) {
       out.stConfig = { url, stores };
       out.debrid = true;
       out.enableP2P = true;
-      out.qbitMode = "off";
+      if (out.qbitMode === "off") out.qbitMode = "private";
     }
   }
 
@@ -1352,6 +1351,69 @@ async function markTorrentDownloadFailed(link) {
 
 const activeDownloads = new Map();
 
+const INFOHASH_QUEUE_CONCURRENCY = Math.max(1, Math.min(10, Number(process.env.INFOHASH_QUEUE_CONCURRENCY || 3)));
+
+function infoHashQueueKey(r) {
+  if (!r) return null;
+  const fallbackHash = r.InfoHash ? String(r.InfoHash).toLowerCase() : null;
+  if (fallbackHash) return `hash:${fallbackHash}`;
+
+  const magnetHash = r.MagnetUri ? extractInfoHash(r.MagnetUri) : null;
+  if (magnetHash) return `magnet:${magnetHash}`;
+
+  const httpLink = (r.Link && !String(r.Link).startsWith("magnet:")) ? String(r.Link) : null;
+  if (httpLink) return `urlhash:${crypto.createHash("sha1").update(httpLink).digest("hex")}`;
+
+  return null;
+}
+
+class InfoHashQueue {
+  constructor(concurrency = 3) {
+    this.concurrency = concurrency;
+    this.running = 0;
+    this.queue = [];
+    this.queuedKeys = new Set();
+    this.runningKeys = new Set();
+  }
+
+  enqueue(r, reqCtx = {}) {
+    const key = infoHashQueueKey(r);
+    if (!key || this.queuedKeys.has(key) || this.runningKeys.has(key) || activeDownloads.has(key)) return false;
+
+    this.queue.push({ key, r, reqCtx });
+    this.queuedKeys.add(key);
+    this.drain();
+    return true;
+  }
+
+  enqueueMany(items, limit, reqCtx = {}) {
+    let added = 0;
+    for (const item of [...items].slice(0, limit)) {
+      if (this.enqueue(item, { ...reqCtx })) added++;
+    }
+    return added;
+  }
+
+  drain() {
+    while (this.running < this.concurrency && this.queue.length > 0) {
+      const task = this.queue.shift();
+      this.queuedKeys.delete(task.key);
+      this.runningKeys.add(task.key);
+      this.running++;
+
+      resolveInfoHash(task.r, { ...task.reqCtx, waitForDownload: true })
+        .catch(err => console.warn(`[InfoHashQueue] Falha ao resolver infoHash: ${err.message}`))
+        .finally(() => {
+          this.running--;
+          this.runningKeys.delete(task.key);
+          this.drain();
+        });
+    }
+  }
+}
+
+const infoHashQueue = new InfoHashQueue(INFOHASH_QUEUE_CONCURRENCY);
+
 async function resolveInfoHash(r, reqCtx = {}) {
   let fallbackHash = r.InfoHash ? r.InfoHash.toLowerCase() : null;
   let magnetHash   = r.MagnetUri ? extractInfoHash(r.MagnetUri) : null;
@@ -1447,6 +1509,10 @@ async function resolveInfoHash(r, reqCtx = {}) {
         }
       })();
       activeDownloads.set(urlHashKey, downloadPromise);
+    }
+
+    if (reqCtx.waitForDownload) {
+      return await downloadPromise;
     }
 
     // Retorna rapidamente se o download demorar mais de 6s
@@ -2358,9 +2424,9 @@ app.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {
     }
     res.json({ streams });
 
-    // Resolve no background para caches futuros
-    const bgs = [...candidates].slice(0, maxOut * 2).map(r => resolveInfoHash(r, {}));
-    Promise.allSettled(bgs).catch(() => {});
+    // Resolve no background para caches futuros sem saturar o Prowlarr/tracker.
+    const queued = infoHashQueue.enqueueMany(candidates, maxOut * 2);
+    if (queued) console.log(`[InfoHashQueue] ${queued} itens enfileirados pela rota interna`);
   } catch (err) {
     console.error(`[Internal] Erro: ${err.message}`);
     res.json({ streams: [] });
@@ -3030,6 +3096,61 @@ function renameScrapStreamForNativeDebrid(stream, prefs = {}) {
   return stream;
 }
 
+function isGenericProwJackStreamName(name, addonName = "ProwJack") {
+  const lines = String(name || "").split(/\n+/).map(s => s.trim()).filter(Boolean);
+  if (!lines.length) return true;
+  const addonRe = new RegExp(`^${addonName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "i");
+  const firstIsAddon = addonRe.test(lines[0]) || /^ProwJack\b/i.test(lines[0]);
+  const detail = lines.slice(1).join(" ");
+  return firstIsAddon && (!detail || /^\s*(?:⚡️?|⬇️|links?|\[st\]|\[p2p\]|\[pro\]|\s)+$/i.test(detail));
+}
+
+function normalizeStremThruStreamName(stream, prefs = {}) {
+  const addonName = prefs.addonName || "ProwJack";
+  
+  const haystack = [
+    stream?.name,
+    stream?.title,
+    stream?.description,
+    stream?.behaviorHints?.filename,
+    stream?.url,
+    stream?.externalUrl,
+  ].filter(Boolean).join(" ");
+  const low = haystack.toLowerCase();
+  
+  const badges = [];
+  if (/\[tb\]|\btorbox\b/.test(low)) badges.push("[TB]");
+  if (/\[rd\]|\brealdebrid\b|\breal-debrid\b/.test(low)) badges.push("[RD]");
+  if (/\[ad\]|\balldebrid\b/.test(low)) badges.push("[AD]");
+  if (/\[pm\]|\bpremiumize\b/.test(low)) badges.push("[PM]");
+  if (/\[dl\]|\bdebridlink\b|\bdebrid-link\b/.test(low)) badges.push("[DL]");
+  if (/\[oc\]|\boffcloud\b/.test(low)) badges.push("[OC]");
+
+  const hasInstant = /⚡|instant|cached|cache|dispon[ií]vel/i.test(haystack);
+  const hasDownload = /⬇|download|cloud|uncached|baix/i.test(haystack);
+  const icons = `${hasInstant || !hasDownload ? "⚡️" : ""}${hasDownload ? "⬇️" : ""}` || "⚡️";
+
+  let upstreamName = String(stream?.name || "").trim();
+  let resLabel = "Links";
+  
+  if (upstreamName) {
+    const lines = upstreamName.split(/\n+/).map(s => s.trim()).filter(Boolean);
+    const possibleRes = lines.find(line => /4K|FHD|HD|SD|Links/i.test(line));
+    if (possibleRes) {
+      resLabel = possibleRes.replace(/\[(TB|RD|AD|PM|DL|OC)\]/gi, "").replace(/⚡️|⚡|⬇️/g, "").replace(/^StremThru$/i, "").trim();
+    }
+  }
+
+  const topName = [...badges, icons, addonName].filter(Boolean).join(" ");
+  return `${topName}\n${resLabel || "Links"}`;
+}
+
+function isPrivateTrackerCandidate(r, resolved = null) {
+  if (r?.MagnetUri) return false;
+  if (resolved?.buffer) return true;
+  return !!(r?.Link && !String(r.Link).startsWith("magnet:"));
+}
+
 const BAD_RE = /\b(cam|hdcam|camrip|workprint)\b/i;
 const BAD_EXT_RE = /\.(iso|r\d{2}|zip|rar|7z|tar|gz|zipx|arj|txt|nfo|jpg|png|pdf|exe|bat|cmd|scr|msi|ps1|vbs|js|jar|com|pif|reg|dll|sys|lnk|url)$/i;
 app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
@@ -3135,25 +3256,20 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
       const combined = [];
 
       const stStreams = proxyStreams.map(s => {
-        let newName = s.name || "";
-        const lowName = newName.toLowerCase();
-        let tag = "";
-        if (lowName.includes("torbox") || lowName.includes("[tb]")) tag = "[TB]";
-        else if (lowName.includes("realdebrid") || lowName.includes("real-debrid") || lowName.includes("[rd]")) tag = "[RD]";
-        else if (lowName.includes("alldebrid") || lowName.includes("[ad]")) tag = "[AD]";
-        else if (lowName.includes("premiumize") || lowName.includes("[pm]")) tag = "[PM]";
-        
-        let addonLabel = prefs.addonName || "ProwJack";
-        let cacheEmoji = s.name?.includes("⬇️") ? "⬇️" : "⚡️";
-        const topName = tag ? `${tag} ${addonLabel} ${cacheEmoji}` : `${addonLabel} ${cacheEmoji}`;
-        
         let desc = s.description || s.title || "";
         const filename = s.behaviorHints?.filename;
         if (filename && !desc.includes(filename)) {
           desc += `\n📂 ${filename}`;
         }
         
-        return { ...s, name: topName, description: desc.trim(), _sourceType: "debrid", _cached: true };
+        return {
+          ...s,
+          name: normalizeStremThruStreamName(s, prefs),
+          description: desc.trim(),
+          _sourceType: "debrid",
+          _stremThruProxy: true,
+          _cached: true,
+        };
       });
       combined.push(...stStreams);
 
@@ -3196,11 +3312,13 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
           return _res;
         })()).filter(Boolean);
 
+        let stPrivateCandidates = 0;
+        let stQbitCandidates = 0;
         const p2pStreamsNested = await Promise.all(_stWithHashes.slice(0, maxOut).map(async r => {
           const resolved = r._resolved;
           if (!resolved.infoHash) return null;
           const indexerName = r._indexerName || r.Tracker || r.TrackerId || r.Indexer || "Unknown";
-          const { name, description } = formatStream(r, indexerName, parsed.isAnime, prefs, true, streamMeta);
+          const { name, description, resLabel } = formatStream(r, indexerName, parsed.isAnime, prefs, true, streamMeta);
           let trackerList = [];
           if (resolved.buffer) trackerList = extractTrackers(resolved.buffer);
           else if (r.MagnetUri) {
@@ -3211,13 +3329,14 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
           const sources = (trackerList.length ? trackerList : EXTRA_TRACKERS)
             .map(t => `tracker:${t}`).concat(`dht:${resolved.infoHash}`);
             
-          const isPrivateTracker = !r.MagnetUri && !!resolved?.buffer;
+          const isPrivateTracker = isPrivateTrackerCandidate(r, resolved);
+          if (isPrivateTracker) stPrivateCandidates++;
           const fallbackTitle = (r.Title && !r.Title.includes('\n')) ? r.Title : "";
           const displayFileName = r._scrapStream?._filename || fallbackTitle;
           const filenameLine = displayFileName ? `📂 ${displayFileName}` : "";
           const publicBase = getPublicBase(req);
             
-          const p2pName = `${prefs.addonName || "ProwJack"}\n⬇️ Links`;
+          const p2pName = name;
           const p2pStream = {
             name: p2pName, 
             description: [description, filenameLine, isPrivateTracker ? "🔒 Tracker Privado" : ""].filter(Boolean).join("\n"),
@@ -3235,6 +3354,7 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
 
           const qbitCreds = null;
           const qbitEnabledForPrefs = shouldOfferQbitForResult(prefs, isPrivateTracker, qbitCreds);
+          if (qbitEnabledForPrefs && resolved?.infoHash) stQbitCandidates++;
           if (qbitEnabledForPrefs && resolved?.infoHash) {
             let torrentB64 = null;
             if (resolved.buffer) {
@@ -3249,7 +3369,7 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
             });
             
             const publicBase  = getPublicBase(req);
-            const qbitName = `${prefs.addonName || "ProwJack"}\n⬇️ Links [QB]`;
+            const qbitName = `${prefs.addonName || "ProwJack"}\n⬇️ ${resLabel || "Links"} [QB]`;
             const qbitStream = {
               name: qbitName,
               description: [description, filenameLine, isPrivateTracker ? "🔒 Tracker Privado" : ""].filter(Boolean).join("\n"),
@@ -3264,6 +3384,7 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
         }));
         
         const p2pStreams = p2pStreamsNested.flat().filter(Boolean);
+        console.log(`[QB] StremThru candidatos com hash=${_stWithHashes.length} privados=${stPrivateCandidates} elegiveis=${stQbitCandidates} qbit=${isQbitEnabledForPrefs(prefs, qbitCreds) ? "on" : "off"} modo=${prefs.qbitMode}`);
         combined.push(...p2pStreams);
       }
 
@@ -3281,7 +3402,7 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
       let normalPool = combined.filter(s => !isQbStream(s));
       const limitedNormal = normalPool.slice(0, maxOut);
       
-      const QB_EXTRA_SLOTS = prefs.qbExtraSlots ?? 5;
+      const stQbExtraSlots = prefs.qbExtraSlots ?? QB_EXTRA_SLOTS;
       const normalKeys = new Set(limitedNormal.map(s => s.infoHash || s.behaviorHints?.bingeGroup || s.url).filter(Boolean));
       const qbExtra = combined
         .filter(isQbStream)
@@ -3289,9 +3410,11 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
           const key = s.infoHash || s.behaviorHints?.bingeGroup || s.url;
           return !key || !normalKeys.has(key);
         })
-        .slice(0, QB_EXTRA_SLOTS);
+        .slice(0, stQbExtraSlots);
+      if (qbExtra.length) console.log(`[QB] ${qbExtra.length} streams [QB] adicionados no modo StremThru (QB_EXTRA_SLOTS=${stQbExtraSlots})`);
 
       const finalStreamsCombined = [...limitedNormal, ...qbExtra];
+      const qbitCount = finalStreamsCombined.filter(isQbStream).length;
 
       // Remove campos internos antes de enviar ao Stremio
       const finalStreams = finalStreamsCombined.map(s => {
@@ -3305,13 +3428,21 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
         const ttl = reqCtx.hasTimedOut ? 5 : 10800; // 5 segundos se incompleto
         await rc.set(streamCacheKey, JSON.stringify(finalStreams), ttl).catch(() => {});
       }
-      console.log(`[STREMTHRU] Enviando ${finalStreams.length} streams (${stStreams.length} debrid + P2P)`);
+      const finalShape = finalStreams.slice(0, 5).map(s => ({
+        name: String(s.name || "").replace(/\n/g, " | ").slice(0, 80),
+        url: !!s.url,
+        externalUrl: !!s.externalUrl,
+        infoHash: !!s.infoHash,
+      }));
+      console.log(`[STREMTHRU] Shape final: ${JSON.stringify(finalShape)}`);
+      console.log(`[STREMTHRU] Enviando ${finalStreams.length} streams (${stStreams.length} debrid + ${qbitCount} QB + P2P)`);
       console.log(`=========================================\n`);
       releaseLock(finalStreams);
 
       // Inicia resolução em background para popular o cache para a próxima busca
-      const bgs = [...jackettResults].slice(0, 40).map(r => resolveInfoHash(r, {}));
-      Promise.allSettled(bgs).catch(() => {});
+      // sem abrir dezenas de downloads .torrent simultâneos no Prowlarr/tracker.
+      const queued = infoHashQueue.enqueueMany(jackettResults, 40);
+      if (queued) console.log(`[InfoHashQueue] ${queued} itens enfileirados pelo fallback StremThru`);
 
       return res.json({ streams: finalStreams });
     }
@@ -3793,8 +3924,8 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
             ? await getPlayableLocalFile(resolved.infoHash, matchedFile?.idx ?? null, matchedFile?.name || null, qbitCreds).catch(() => null)
             : null;
 
-          // Tracker privado = sem MagnetUri mas com buffer .torrent baixado
-          const isPrivateTracker = !r.MagnetUri && !!resolved.buffer;
+          // Tracker privado = resultado por link .torrent sem MagnetUri, mesmo quando o buffer veio do cache.
+          const isPrivateTracker = isPrivateTrackerCandidate(r, resolved);
 
           let qbitStreamPromise = null;
           const buildQbitStream = async () => {
