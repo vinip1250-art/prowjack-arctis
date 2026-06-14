@@ -1817,13 +1817,20 @@ async function jackettStructuredSearch(search, indexer, timeout, jUrl, jKey) {
   return parseTorznabResults(String(res.data || ""), indexer);
 }
 
+const activeSearches = new Map();
+
 async function jackettSearchOneIndexer(indexer, plan, timeout, fastTimeout, jUrl, jKey) {
   if (await isRateLimited(indexer)) return [];
-  const t0 = Date.now();
-  // IDs numéricos = Prowlarr: vai direto para prowlarrSearch sem tentar endpoint Jackett
-  const isProwlarr = /^\d+$/.test(String(indexer));
-  try {
-    let results = [];
+  
+  const searchKey = `${indexer.url || indexer}|${JSON.stringify(plan.queries)}|${JSON.stringify(plan.search || {})}`;
+  let searchPromise = activeSearches.get(searchKey);
+  if (!searchPromise) {
+    searchPromise = (async () => {
+      const t0 = Date.now();
+      // IDs numéricos = Prowlarr: vai direto para prowlarrSearch sem tentar endpoint Jackett
+      const isProwlarr = /^\d+$/.test(String(indexer));
+      try {
+        let results = [];
     if (!isProwlarr && plan.search && !plan.parsed?.isAnime) {
       try {
         results = await jackettStructuredSearch(plan.search, indexer, timeout, jUrl, jKey);
@@ -1867,6 +1874,10 @@ async function jackettSearchOneIndexer(indexer, plan, timeout, fastTimeout, jUrl
       console.log(`  ${indexer}: timeout lento de ${ms}ms (indo para background)`);
     return [];
   }
+})();
+    activeSearches.set(searchKey, searchPromise);
+  }
+  return searchPromise;
 }
 
 async function trackMetrics(indexer, ms, count, ok) {
@@ -2998,7 +3009,13 @@ function renameScrapStreamForNativeDebrid(stream, prefs = {}) {
   const fallback = stream.externalUrl && !stream.url && !stream.infoHash ? "Links externos" : "Links";
   const label = detailLines.length ? detailLines.join("\n") : `⚡ ${fallback}`;
 
-  stream.name = `${addonName}\n${label}`;
+  // Adiciona a tag de provider sempre em modo nativo
+  let providerTag = "";
+  if (prefs.debridConfig.mode === "torbox") providerTag = " [TB]";
+  else if (prefs.debridConfig.mode === "realdebrid") providerTag = " [RD]";
+  else if (prefs.debridConfig.mode === "dual") providerTag = " [TB+RD]";
+
+  stream.name = `${addonName}\n${label}${providerTag}`;
   return stream;
 }
 
@@ -3106,15 +3123,28 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
       // Constrói streams finais combinando os dois resultados
       const combined = [];
 
-      // 1) Streams debrid do StremThru — links prontos para reprodução
+      // Se proxy retornou stremThruProxy=true, formatamos os nomes e mantemos
       const stStreams = proxyStreams.map(s => {
-        if (!s.name || /^ProwJack\b/i.test(s.name)) {
-          s.name = `${addonName}\n${s.name?.split("\n").slice(1).join("\n") || "⚡ Links [ST]"}`;
+        let newName = s.name || "";
+        newName = newName.replace(/StremThru/i, prefs.addonName || "ProwJack");
+        const lowName = newName.toLowerCase();
+        let tag = "";
+        if (lowName.includes("torbox")) { newName = newName.replace(/torbox/gi, "").trim(); tag = "[TB]"; }
+        else if (lowName.includes("realdebrid") || lowName.includes("real-debrid")) { newName = newName.replace(/real-?debrid/gi, "").trim(); tag = "[RD]"; }
+        else if (lowName.includes("alldebrid")) { newName = newName.replace(/alldebrid/gi, "").trim(); tag = "[AD]"; }
+        else if (lowName.includes("premiumize")) { newName = newName.replace(/premiumize/gi, "").trim(); tag = "[PM]"; }
+        
+        if (!newName.includes("⚡️") && !newName.includes("⬇️")) {
+          const parts = newName.split("\n");
+          if (parts.length > 1) {
+            parts[1] = `⚡️ ${parts[1]}`;
+            newName = parts.join("\n");
+          } else {
+            newName = `${prefs.addonName || "ProwJack"}\n⚡️ ${newName}`;
+          }
         }
-        if (s.behaviorHints?.notWebReady) s.behaviorHints.notWebReady = false;
-        s._cached = true;
-        s._sourceType = "debrid";
-        return s;
+        if (tag && !newName.includes(tag)) newName += ` ${tag}`;
+        return { ...s, name: newName, _sourceType: "debrid", _cached: true };
       });
       combined.push(...stStreams);
 
@@ -3861,9 +3891,7 @@ app.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
                 const animeParam   = parsed.isAnime ? "&anime=1" : "";
                 const addUrl     = `${hostUrl}/${req.params.userConfig}/debrid-add/${provider}/${resolved.infoHash}?magnet=${encodeURIComponent(magnet)}${linkParam}${fileParam}${cachedParam}${seasonParam}${episodeParam}${animeParam}`;
                 const cacheEmoji = resObj.cached ? "⚡️" : "⬇️";
-                const streamName = isDual
-                  ? `${addonName}\n${cacheEmoji} ${resLabelStr} ${providerTag}`
-                  : `${addonName}\n${cacheEmoji} ${resLabelStr}`;
+                const streamName = `${addonName}\n${cacheEmoji} ${resLabelStr} ${providerTag}`;
 
                 const debridOption = {
                   name: streamName,
