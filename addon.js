@@ -3161,13 +3161,19 @@ function normalizeStremThruStreamName(stream, prefs = {}) {
   return `${topName}\n${bottomName}`;
 }
 
+const PUBLIC_TRACKERS = ["1337x", "thepiratebay", "eztv", "yts", "torrentgalaxy", "rutracker", "nyaasi", "nyaa", "limetorrents", "torlock", "kickass", "demonoid", "rarbg", "bitsearch", "solidtorrents", "magnetdl", "bt4g", "idope", "extratorrent", "comando", "bludv", "lapumia", "ondebaixa", "thepiratafilmes", "baixar", "torrentdosfilmes"];
+
 function isPrivateTrackerCandidate(r, resolved = null) {
   if (r?.MagnetUri) return false;
   if (resolved?.isPrivate !== undefined) return resolved.isPrivate;
   if (resolved?.buffer) {
     return resolved.buffer.toString("latin1").includes("7:privatei1e");
   }
-  return false;
+
+  const indexerLower = String(r?.Tracker || r?.TrackerId || "").toLowerCase();
+  if (PUBLIC_TRACKERS.some(pub => indexerLower.includes(pub))) return false;
+
+  return !!(r?.Link && !String(r.Link).startsWith("magnet:"));
 }
 
 const BAD_RE = /\b(cam|hdcam|camrip|workprint)\b/i;
