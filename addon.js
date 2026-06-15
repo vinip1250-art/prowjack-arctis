@@ -1439,13 +1439,23 @@ async function resolveInfoHash(r, reqCtx = {}) {
 
     const urlHashKey = `urlhash:${crypto.createHash("sha1").update(httpLink).digest("hex")}`;
     try {
-      const cachedHash = await rc.get(urlHashKey);
-      if (cachedHash) {
+      const cachedHashStr = await rc.get(urlHashKey);
+      if (cachedHashStr) {
+        let cachedHash = cachedHashStr;
+        let isPrivate;
+        if (cachedHashStr.includes("|")) {
+           const parts = cachedHashStr.split("|");
+           cachedHash = parts[0];
+           isPrivate = parts[1] === "1";
+        }
         try {
           const cachedBuf = await rc.getBuffer(`torrent:${cachedHash}`);
-          if (cachedBuf) return { infoHash: cachedHash, files: extractTorrentFiles(cachedBuf), buffer: cachedBuf };
+          if (cachedBuf) {
+             if (isPrivate === undefined) isPrivate = cachedBuf.toString("latin1").includes("7:privatei1e");
+             return { infoHash: cachedHash, files: extractTorrentFiles(cachedBuf), buffer: cachedBuf, isPrivate };
+          }
         } catch {}
-        return { infoHash: cachedHash, files: null, buffer: null };
+        return { infoHash: cachedHash, files: null, buffer: null, isPrivate };
       }
     } catch {}
 
@@ -1470,24 +1480,25 @@ async function resolveInfoHash(r, reqCtx = {}) {
           const finalUrl = res.request?.res?.responseUrl || "";
           if (finalUrl.startsWith("magnet:")) {
             const h = extractInfoHash(finalUrl);
-            if (h) rc.set(urlHashKey, h, 7 * 24 * 3600).catch(()=>{});
-            return h ? { infoHash: h, files: null, buffer: null } : null;
+            if (h) rc.set(urlHashKey, `${h}|0`, 7 * 24 * 3600).catch(()=>{});
+            return h ? { infoHash: h, files: null, buffer: null, isPrivate: false } : null;
           }
           const buf = Buffer.from(res.data);
           if (buf.length > 8 * 1024 * 1024) return null;
           const bodyStr = buf.toString("utf8", 0, Math.min(buf.length, 200));
           if (bodyStr.trimStart().startsWith("magnet:")) {
             const h = extractInfoHash(bodyStr.trim());
-            if (h) rc.set(urlHashKey, h, 7 * 24 * 3600).catch(()=>{});
-            return h ? { infoHash: h, files: null, buffer: null } : null;
+            if (h) rc.set(urlHashKey, `${h}|0`, 7 * 24 * 3600).catch(()=>{});
+            return h ? { infoHash: h, files: null, buffer: null, isPrivate: false } : null;
           }
           if (buf[0] === 0x64) {
             const infoBuf = extractInfoBuf(buf);
             if (infoBuf) {
               const realHash = crypto.createHash("sha1").update(infoBuf).digest("hex");
+              const isPrivate = infoBuf.toString("latin1").includes("7:privatei1e");
               rc.setBuffer(`torrent:${realHash}`, buf, 7 * 24 * 3600).catch(() => {});
-              rc.set(urlHashKey, realHash, 7 * 24 * 3600).catch(() => {});
-              return { infoHash: realHash, files: extractTorrentFiles(buf), buffer: buf };
+              rc.set(urlHashKey, `${realHash}|${isPrivate ? 1 : 0}`, 7 * 24 * 3600).catch(() => {});
+              return { infoHash: realHash, files: extractTorrentFiles(buf), buffer: buf, isPrivate };
             }
           }
           return null;
@@ -1496,8 +1507,8 @@ async function resolveInfoHash(r, reqCtx = {}) {
             const src = _magnetRedirect || err.cause?.magnetUrl;
             const h   = src ? extractInfoHash(src) : null;
             if (h) {
-              rc.set(urlHashKey, h, 7 * 24 * 3600).catch(()=>{});
-              return { infoHash: h, files: null, buffer: null };
+              rc.set(urlHashKey, `${h}|0`, 7 * 24 * 3600).catch(()=>{});
+              return { infoHash: h, files: null, buffer: null, isPrivate: false };
             }
           } else {
             await markTorrentDownloadFailed(httpLink);
@@ -3152,8 +3163,11 @@ function normalizeStremThruStreamName(stream, prefs = {}) {
 
 function isPrivateTrackerCandidate(r, resolved = null) {
   if (r?.MagnetUri) return false;
-  if (resolved?.buffer) return true;
-  return !!(r?.Link && !String(r.Link).startsWith("magnet:"));
+  if (resolved?.isPrivate !== undefined) return resolved.isPrivate;
+  if (resolved?.buffer) {
+    return resolved.buffer.toString("latin1").includes("7:privatei1e");
+  }
+  return false;
 }
 
 const BAD_RE = /\b(cam|hdcam|camrip|workprint)\b/i;
