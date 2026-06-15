@@ -3117,21 +3117,20 @@ function normalizeStremThruStreamName(stream, prefs = {}) {
     stream?.title,
     stream?.description,
     stream?.behaviorHints?.filename,
-    stream?.url,
-    stream?.externalUrl,
   ].filter(Boolean).join(" ");
   const low = haystack.toLowerCase();
   
   const badges = [];
-  if (/\[tb\]|\btorbox\b/.test(low)) badges.push("[TB]");
-  if (/\[rd\]|\brealdebrid\b|\breal-debrid\b/.test(low)) badges.push("[RD]");
-  if (/\[ad\]|\balldebrid\b/.test(low)) badges.push("[AD]");
-  if (/\[pm\]|\bpremiumize\b/.test(low)) badges.push("[PM]");
-  if (/\[dl\]|\bdebridlink\b|\bdebrid-link\b/.test(low)) badges.push("[DL]");
-  if (/\[oc\]|\boffcloud\b/.test(low)) badges.push("[OC]");
+  if (/\[tb\]|\(tb\)|\btorbox\b/.test(low)) badges.push("[TB]");
+  if (/\[rd\]|\(rd\)|\brealdebrid\b|\breal-debrid\b/.test(low)) badges.push("[RD]");
+  if (/\[ad\]|\(ad\)|\balldebrid\b/.test(low)) badges.push("[AD]");
+  if (/\[pm\]|\(pm\)|\bpremiumize\b/.test(low)) badges.push("[PM]");
+  if (/\[dl\]|\(dl\)|\bdebridlink\b|\bdebrid-link\b/.test(low)) badges.push("[DL]");
+  if (/\[oc\]|\(oc\)|\boffcloud\b/.test(low)) badges.push("[OC]");
 
   const hasInstant = /⚡|instant|cached|cache|dispon[ií]vel/i.test(haystack);
   const hasDownload = /⬇|download|cloud|uncached|baix/i.test(haystack);
+  // Se não encontrar indicadores explícitos, assume que o Debrid do StremThru é instant (⚡️)
   const icons = `${hasInstant || !hasDownload ? "⚡️" : ""}${hasDownload ? "⬇️" : ""}` || "⚡️";
 
   let upstreamName = String(stream?.name || "").trim();
@@ -3141,12 +3140,13 @@ function normalizeStremThruStreamName(stream, prefs = {}) {
     const lines = upstreamName.split(/\n+/).map(s => s.trim()).filter(Boolean);
     const possibleRes = lines.find(line => /4K|FHD|HD|SD|Links/i.test(line));
     if (possibleRes) {
-      resLabel = possibleRes.replace(/\[(TB|RD|AD|PM|DL|OC)\]/gi, "").replace(/⚡️|⚡|⬇️/g, "").replace(/^StremThru$/i, "").trim();
+      resLabel = possibleRes.replace(/\[(TB|RD|AD|PM|DL|OC)\]/gi, "").replace(/\((TB|RD|AD|PM|DL|OC)\)/gi, "").replace(/⚡️|⚡|⬇️/g, "").replace(/^StremThru$/i, "").trim();
     }
   }
 
-  const topName = addonName;
-  const bottomName = [...badges, icons, resLabel || "Links"].filter(Boolean).join(" ");
+  // O usuário pediu explicitamente: ProwJack [TB] ⚡️
+  const topName = `${addonName} ${badges.join("")} ${icons}`.replace(/\s+/g, " ").trim();
+  const bottomName = resLabel || "Links";
   return `${topName}\n${bottomName}`;
 }
 
