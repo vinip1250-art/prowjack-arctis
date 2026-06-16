@@ -226,7 +226,11 @@ async function fetchIndexerRss(jUrl, jKey, indexerId, indexerName, rc) {
 }
 
 function buildRssCacheKey(indexerId, type) {
-  return `rss:${CACHE_VERSION}:${indexerId}:${type}:${crypto.randomBytes(6).toString("hex")}`;
+  // Sufixo fixo ':items' em vez de random:
+  //  - determinístico: o mesmo indexer/type sempre gera a mesma chave (sem acúmulo no Redis)
+  //  - compatível com os globs `rss:v12:*:type:*` usados em loadRssItemsForType,
+  //    updateCatalog e no fast-path do stream handler
+  return `rss:${CACHE_VERSION}:${indexerId}:${type}:items`;
 }
 
 async function saveToRedis(rc, indexerId, indexerName, items, skipCatalog = false) {
@@ -254,6 +258,7 @@ async function saveHashesOnly(rc, indexerId, indexerName, items) {
   }
   for (const [type, list] of Object.entries(byType)) {
     if (!list.length) continue;
+    // Usa a mesma chave determinística de saveToRedis (sem random)
     const key = buildRssCacheKey(indexerId, type);
     await rc.set(key, JSON.stringify(list), RSS_CACHE_TTL).catch(() => {});
   }
@@ -298,6 +303,23 @@ async function updateCatalog(rc, newItems) {
       while (idx < items.length) {
         const item = items[idx++];
         let imdbId = item.ImdbId ? (item.ImdbId.startsWith("tt") ? item.ImdbId : `tt${item.ImdbId}`) : null;
+
+        // Se não tiver ImdbId, tenta encontrar via busca por título no Cinemeta
+        if (!imdbId && item.Title) {
+          try {
+            const stremioType = type === "movie" ? "movie" : "series";
+            const searchRes = await axios.get(
+              `https://v3-cinemeta.strem.io/search/${stremioType}/${encodeURIComponent(item.Title)}.json`,
+              { timeout: 5000, validateStatus: () => true }
+            );
+            const match = searchRes.data?.metas?.[0];
+            if (match?.imdb_id) {
+              imdbId = match.imdb_id.startsWith("tt") ? match.imdb_id : `tt${match.imdb_id}`;
+              item.ImdbId = imdbId; // persiste no item para saveHashesOnly
+            }
+          } catch {}
+        }
+
         let meta = null;
 
         if (imdbId) {
@@ -361,7 +383,8 @@ async function pollOnce(jUrl, jKey, rc) {
 
   for (const ix of indexersToPoll) {
     const items = await fetchIndexerRss(jUrl, jKey, ix.id, ix.name, rc);
-    if (items.length) await saveToRedis(rc, ix.id, ix.name, items, true);
+    // skipCatalog=false: updateCatalog deve ser chamado após salvar os itens
+    if (items.length) await saveToRedis(rc, ix.id, ix.name, items, false);
     await new Promise(r => setTimeout(r, 3000));
   }
 
