@@ -2470,7 +2470,7 @@ app.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {
 
         const streamObj = {
           name: `\n${addonName}\n${resLabel || "Links"}`,
-          description: [description, filenameLine, isPrivateTracker ? "🔒 Tracker Privado" : ""].filter(Boolean).join("\\n"),
+          description: [description, filenameLine, isPrivateTracker ? "🔒 Tracker Privado" : ""].filter(Boolean).join("\n"),
           behaviorHints: { notWebReady: false },
         };
 
@@ -3405,7 +3405,7 @@ function normalizeStremThruStreamName(stream, prefs = {}) {
   return `${addonName}\n${badgeStr} ${resLabel}`.trim();
 }
 
-const PUBLIC_TRACKERS = ["1337x", "thepiratebay", "eztv", "yts", "torrentgalaxy", "rutracker", "nyaasi", "nyaa", "limetorrents", "torlock", "kickass", "demonoid", "rarbg", "bitsearch", "solidtorrents", "magnetdl", "bt4g", "idope", "extratorrent", "comando", "bludv", "lapumia", "ondebaixa", "thepiratafilmes", "baixar", "torrentdosfilmes"];
+const PUBLIC_TRACKERS = ["1337x", "thepiratebay", "eztv", "yts", "torrentgalaxy", "rutracker", "nyaasi", "nyaa", "limetorrents", "torlock", "kickass", "demonoid", "rarbg", "bitsearch", "solidtorrents", "magnetdl", "bt4g", "idope", "extratorrent", "comando", "bludv", "lapumia", "ondebaixa", "thepiratafilmes", "baixar", "torrentdosfilmes", "thepiratafilmes", "betor", "torrentio", "bitmagnet"];
 
 function isPrivateTrackerCandidate(r, resolved = null) {
   if (resolved?.isPrivate !== undefined) return !!resolved.isPrivate;
