@@ -3,7 +3,7 @@ services:
     build: .
     container_name: prowjack
     restart: unless-stopped
-    network_mode: "service:gluetun"
+    network_mode: "service:protonvpn"
 #    networks:
 #      - npm-net
 #    ports:
