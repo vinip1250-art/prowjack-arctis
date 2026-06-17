@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const path = require("path");
 const crypto = require("crypto");
+const { isConfigured: isQbitConfigured, ensureTorrentReady, getPlayableLocalFile, streamTorrentFile } = require("../providers/qbittorrent");
 const { ENV, CACHE_VERSION, STREAM_CACHE_VERSION, TORRENT_DOWNLOAD_TIMEOUT_MS, PUBLIC_TRACKERS, BAD_RE, BAD_EXT_RE } = require("../constants");
 const { rc, redis, saveQbitJob, loadQbitJob } = require("../cache");
 const { decodeUserCfg } = require("../configStore");
