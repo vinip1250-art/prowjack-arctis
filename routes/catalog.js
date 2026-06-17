@@ -4,7 +4,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { ENV, CACHE_VERSION, STREAM_CACHE_VERSION, TORRENT_DOWNLOAD_TIMEOUT_MS } = require("../constants");
 const { rc, redis, saveQbitJob, loadQbitJob } = require("../cache");
-const { decodeUserCfg } = require("../configStore");
+const { decodeUserCfg, resolvePrefs } = require("../configStore");
 const { normalizePrefs, sanitizeUserPrefs, clampNumber, defaultPrefs } = require("../prefs");
 const {
   getPublicBase,
