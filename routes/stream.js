@@ -941,7 +941,8 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
             }
             if (!prefs.onlyDubbed || !priorityLang) return true;
             const langs   = getLangs(r.Title || "", parsed.isAnime);
-            const hasLang = priorityLang ? langs.some(l => l.code === priorityLang) : false;
+            const isMulti = /(multi|dual)[-.\\s]?(audio)?|🌎/i.test(r.Title || "");
+            const hasLang = priorityLang ? langs.some(l => l.code === priorityLang) || (priorityLang === "pt-br" && isMulti) : false;
             return hasLang;
           })
           .filter(r => {
@@ -957,7 +958,8 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
               r._metaIdMatch = true; return true;
             }
             const langs   = getLangs(r.Title || "", parsed.isAnime);
-            const hasLang = priorityLang ? langs.some(l => l.code === priorityLang) : false;
+            const isMulti = /(multi|dual)[-.\\s]?(audio)?|🌎/i.test(r.Title || "");
+            const hasLang = priorityLang ? langs.some(l => l.code === priorityLang) || (priorityLang === "pt-br" && isMulti) : false;
 
             const sc           = titleMatchScore(r.Title || "", [displayTitle, ...aliases]);
             const relaxedScore = relaxedTitleMatchScore(r.Title || "", [displayTitle, ...aliases]);

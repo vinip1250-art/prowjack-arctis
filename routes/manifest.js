@@ -107,8 +107,8 @@ router.get("/:userConfig/manifest.json", async (req, res) => {
   // O catálogo aparece sempre que enableCatalog=true — RSS_CATALOG_INDEXERS
   // só controla quais indexers são polled, não se o catálogo existe no manifest.
   if (prefs.enableCatalog) {
-    if (enabledCats.includes("movie"))  catalogs.push({ type: "movie",  id: "prowjack_rss_movie",  name: `${name} — Lançamentos` });
-    if (enabledCats.includes("series")) catalogs.push({ type: "series", id: "prowjack_rss_series", name: `${name} — Lançamentos` });
+    if (enabledCats.includes("movie"))  catalogs.push({ type: "movie",  id: "prowjack_rss_movie",  name: `${name} — Recentes` });
+    if (enabledCats.includes("series")) catalogs.push({ type: "series", id: "prowjack_rss_series", name: `${name} — Recentes` });
   }
 
   res.json({
