@@ -285,7 +285,10 @@ function dedupeResults(results) {
     }
 
     const normalized = normalizeForDedupe(r.Title || "");
-    if (!normalized) continue;
+    if (!normalized) {
+      if (r._scrapSource) deduped.push(r);
+      continue;
+    }
 
     const sizeGB = Math.round((r.Size || 0) / 1e8) / 10;
     const key    = `${normalized}|${sizeGB}`;
@@ -314,9 +317,11 @@ function dedupeWithCachePriority(withHashes, isDebridMode) {
   const seenHash   = new Set();
   const noExactDups = [];
   for (const r of withHashes) {
-    const h = r._resolved.infoHash;
-    if (seenHash.has(h)) continue;
-    seenHash.add(h);
+    const h = r._resolved?.infoHash;
+    if (h) {
+      if (seenHash.has(h)) continue;
+      seenHash.add(h);
+    }
     noExactDups.push(r);
   }
 
@@ -487,7 +492,11 @@ function formatStream(r, indexerName, isAnime = false, prefs = {}, showSeeds = t
   const vis = matchAll(VISUAL, t);
   const langs = getLangs(t, isAnime);
   const group = extractGroup(t);
-  const size = fmtBytes(r.Size);
+  let size = fmtBytes(r.Size);
+  if (!size && t) {
+    const sizeMatch = t.match(/\[?([0-9.,]+(?:[ ]*)?(?:GiB|MiB|KiB|GB|MB|KB))\]?/i);
+    if (sizeMatch) size = sizeMatch[1].toUpperCase().replace(/\s+/g, '').replace(/I/g, 'i');
+  }
   const seeds = r._displaySeeds ?? r.Seeders ?? 0;
   const cleanIndexer = renameIndexer(indexerName);
   const addonName = prefs.addonName || "ProwJack";

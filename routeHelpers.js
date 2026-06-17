@@ -5,8 +5,8 @@ const axios = require("axios");
 const { rc, redis } = require("./cache");
 const { getPreferredRssIndexers, loadRssItemsForType, buildRssVideos, matchRssItemsByMarker } = require("./rssHelpers");
 const { stripSourceBadges } = require("./scoring");
-const { ENV } = require("./constants");
-
+const { ENV, PUBLIC_TRACKERS } = require("./constants");
+const { isConfigured: isQbitConfigured } = require("./providers/qbittorrent");
 
 const rateLimitStore = new Map();
 const RATE_LIMIT_WINDOW = 60000;

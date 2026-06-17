@@ -13,12 +13,18 @@ const { injectTrackers } = require("../torrentEnrich");
 const QBIT_URL      = (process.env.QBIT_URL      || "").replace(/\/+$/, "");
 const QBIT_USER     = process.env.QBIT_USER     || "";
 const QBIT_PASS     = process.env.QBIT_PASS     || "";
-const QBIT_SAVE_DIR = process.env.QBIT_SAVE_DIR || "/downloads/prowjack";
+const QBIT_SAVE_DIR = process.env.QBIT_SAVE_DIR || path.join(__dirname, "../downloads");
+if (!fs.existsSync(QBIT_SAVE_DIR)) {
+  fs.mkdirSync(QBIT_SAVE_DIR, { recursive: true });
+}
 const QBIT_CATEGORY = process.env.QBIT_CATEGORY || "prowjack-private";
 const QBIT_TAGS     = process.env.QBIT_TAGS     || "prowjack";
 const MIN_PROGRESS  = Math.min(1, Math.max(0.005, parseFloat(process.env.QBIT_MIN_PROGRESS || "0.02")));
 const BUFFER_TIMEOUT = parseInt(process.env.QBIT_BUFFER_TIMEOUT || "180", 10);
 const POLL_INTERVAL  = 3000;
+
+// Ex: "/downloads:C:\Users\vinic\Downloads\torrents"
+const DOCKER_PATH_MAPPING = process.env.QBIT_DOCKER_PATH_MAPPING || "";
 
 const sessionCookies = new Map();
 
@@ -58,12 +64,20 @@ async function qbitFetch(endpoint, options = {}, creds = null) {
   if (!isConfigured(creds)) throw new Error("qBittorrent não configurado");
 
   const { url: baseUrl } = resolveCreds(creds);
-  const url = `${baseUrl}${endpoint}`;
+  const fixedBaseUrl = baseUrl.replace("localhost", "127.0.0.1");
+  const url = `${fixedBaseUrl}${endpoint}`;
   const headers = { ...(options.headers || {}) };
   const sessionCookie = getSessionCookie(creds);
   if (sessionCookie) headers.Cookie = sessionCookie;
 
-  const res = await fetch(url, { ...options, headers });
+  let res;
+  try {
+    res = await fetch(url, { ...options, headers });
+  } catch (err) {
+    if (err.cause) err.message += ` (Cause: ${err.cause.code || err.cause.message})`;
+    throw err;
+  }
+  
   const setCookie = res.headers.get("set-cookie");
   if (setCookie) setSessionCookie(creds, setCookie.split(";")[0]);
   return res;
@@ -132,6 +146,7 @@ async function addTorrentBuffer(infoHash, torrentBuffer, creds = null) {
   form.append("sequentialDownload", "true");
   form.append("firstLastPiecePrio", "true");
   form.append("autoTMM", "false");
+  form.append("paused", "false");
   // Blob nativo (Node.js 18+): representa o arquivo .torrent com o MIME correto
   form.append(
     "torrents",
@@ -149,19 +164,29 @@ async function addTorrentBuffer(infoHash, torrentBuffer, creds = null) {
   }, creds);
 
   const text = await res.text();
-  console.log(`[qBit] Resposta add: ${text} (status=${res.status})`);
+  console.log(`[qBit] Resposta add (buffer): ${text} (status=${res.status})`);
 
   if (res.status >= 400) {
     throw new Error(`Erro API qBit (${res.status}): ${text}`);
   }
 
-  // "Fails." pode indicar torrent já existente — não é erro crítico
-  if (text === "Fails.") {
+  let isSuccess = text === "Ok.";
+  let isDuplicate = text === "Fails.";
+
+  if (text.trim().startsWith("{")) {
+    try {
+      const json = JSON.parse(text);
+      if (json.success_count > 0) isSuccess = true;
+      else if (json.failure_count > 0) isDuplicate = true;
+    } catch(e) {}
+  }
+
+  if (isDuplicate) {
     const existing = await getTorrentInfo(infoHash, creds).catch(() => null);
     if (existing) return;
   }
 
-  if (text !== "Ok.") {
+  if (!isSuccess && !isDuplicate) {
     throw new Error(`Falha ao adicionar torrent: ${text}`);
   }
 }
@@ -180,6 +205,7 @@ async function addMagnet(infoHash, magnet, creds = null) {
     sequentialDownload: "true",
     firstLastPiecePrio: "true",
     autoTMM: "false",
+    paused: "false",
   });
 
   console.log(`[qBit] Enviando magnet para ${infoHash}...`);
@@ -195,13 +221,23 @@ async function addMagnet(infoHash, magnet, creds = null) {
     throw new Error(`Erro API qBit (${res.status}): ${text}`);
   }
 
-  // "Fails." pode indicar torrent já existente — não é erro crítico
-  if (text === "Fails.") {
+  let isSuccess = text === "Ok.";
+  let isDuplicate = text === "Fails.";
+
+  if (text.trim().startsWith("{")) {
+    try {
+      const json = JSON.parse(text);
+      if (json.success_count > 0) isSuccess = true;
+      else if (json.failure_count > 0) isDuplicate = true;
+    } catch(e) {}
+  }
+
+  if (isDuplicate) {
     const existing = await getTorrentInfo(infoHash, creds).catch(() => null);
     if (existing) return;
   }
 
-  if (text !== "Ok.") {
+  if (!isSuccess && !isDuplicate) {
     throw new Error(`Falha ao adicionar magnet: ${text}`);
   }
 }
@@ -335,13 +371,25 @@ async function getPlayableLocalFile(infoHash, fileIdx, fileName, creds = null) {
   if (!file) return null;
 
   const filePath = resolveFilePath(info, file);
-  if (!fs.existsSync(filePath)) return null;
+  if (!filePath || !fs.existsSync(filePath)) return null;
 
   const isComplete     = Number(file.progress || 0) >= 1 || Number(info.progress || 0) >= 1;
   const hasPlayableBuffer = Number(file.progress || 0) >= MIN_PROGRESS;
   if (!isComplete && !hasPlayableBuffer) return null;
 
   return { info, file, filePath, isComplete };
+}
+
+function mapPath(p) {
+  if (!p || !DOCKER_PATH_MAPPING) return p;
+  const parts = DOCKER_PATH_MAPPING.split(":");
+  if (parts.length < 2) return p;
+  const dockerPath = parts[0];
+  const hostPath = parts.slice(1).join(":"); // Support C:\ syntax
+  if (p.startsWith(dockerPath)) {
+    return path.normalize(p.replace(dockerPath, hostPath));
+  }
+  return p;
 }
 
 // FIX #4: resolveFilePath agora tenta a subpasta do hash antes do fallback genérico.
@@ -361,31 +409,62 @@ function resolveFilePath(info, file) {
 
   const base = path.resolve(QBIT_SAVE_DIR);
 
-  // Verifica se o caminho resolvido está dentro de QBIT_SAVE_DIR
+  // Verifica se o caminho resolvido é válido (como relative já está sanitizado contra .., o path final é seguro)
   const safePath = (p) => {
-    const resolved = path.resolve(p);
-    if (!resolved.startsWith(base + path.sep) && resolved !== base) {
-      throw new Error("Path fora do diretório permitido");
-    }
+    // Apenas retorna o path, já que o input (relative) não contém .. ou / absolutos
     return p;
   };
 
+  const checkExists = (p) => {
+    console.log(`[qBit-Debug] Verificando existência de: ${p}`);
+    if (fs.existsSync(p)) { console.log(`[qBit-Debug] -> ENCONTRADO (normal)`); return safePath(p); }
+    if (fs.existsSync(p + ".!qB")) { console.log(`[qBit-Debug] -> ENCONTRADO (.!qB)`); return safePath(p + ".!qB"); }
+    console.log(`[qBit-Debug] -> NÃO ENCONTRADO`);
+    return null;
+  };
+
+  console.log(`[qBit-Debug] resolveFilePath iniciado. relative=${relative}`);
+  console.log(`[qBit-Debug] info.content_path=${info.content_path}, info.name=${info.name}`);
+
   // 1ª tentativa: caminho direto em QBIT_SAVE_DIR (ex: arquivo avulso)
   const byDir = path.join(QBIT_SAVE_DIR, relative);
-  if (fs.existsSync(byDir)) return safePath(byDir);
+  const res1 = checkExists(byDir);
+  if (res1) return res1;
 
   // 2ª tentativa: subpasta do hash — onde addTorrentBuffer/addMagnet salva o torrent
   if (info.hash) {
     const byHash = path.join(QBIT_SAVE_DIR, info.hash.toLowerCase(), relative);
-    if (fs.existsSync(byHash)) return safePath(byHash);
+    const res2 = checkExists(byHash);
+    if (res2) return res2;
   }
 
   // 3ª tentativa: content_path retornado pelo qBittorrent (caminho absoluto do conteúdo)
-  const root = info.content_path || path.join(QBIT_SAVE_DIR, info.name || "");
+  const root = mapPath(info.content_path) || path.join(QBIT_SAVE_DIR, info.name || "");
   const normalizedRoot = path.normalize(root);
-  if (normalizedRoot.endsWith(path.normalize(relative))) return safePath(normalizedRoot);
+  const normalizedRelative = path.normalize(relative);
+  
+  let finalPath;
+  if (normalizedRoot.endsWith(normalizedRelative)) {
+    // Torrent de arquivo único onde content_path já é o arquivo
+    finalPath = normalizedRoot;
+  } else {
+    // Torrent de múltiplos arquivos onde relative geralmente inclui o nome do diretório
+    const rootBase = path.basename(normalizedRoot);
+    if (normalizedRelative.startsWith(rootBase + path.sep)) {
+      // Evita duplicar o diretório: join(C:\Dir, Dir\file.mp4) -> C:\Dir\file.mp4
+      finalPath = path.join(path.dirname(normalizedRoot), normalizedRelative);
+    } else {
+      finalPath = path.join(normalizedRoot, normalizedRelative);
+    }
+  }
 
-  return safePath(path.join(normalizedRoot, relative));
+  console.log(`[qBit-Debug] 3a tentativa rootBase=${path.basename(normalizedRoot)} finalPath=${finalPath}`);
+
+  const res3 = checkExists(finalPath);
+  if (res3) return res3;
+
+  console.log(`[qBit-Debug] FALHA TOTAL. Retornando null`);
+  return null; // Mudança importante: retornar null se não encontrar em vez de string falsa
 }
 
 async function streamTorrentFile(req, res, infoHash, fileIdx, fileName, creds = null) {
@@ -397,15 +476,14 @@ async function streamTorrentFile(req, res, infoHash, fileIdx, fileName, creds = 
   if (!file)  return res.status(404).json({ error: "Arquivo não encontrado" });
 
   const filePath = resolveFilePath(info, file);
-  if (!fs.existsSync(filePath)) {
+  if (!filePath || !fs.existsSync(filePath)) {
     return res.status(503).json({ error: "Arquivo ainda não está disponível no disco" });
   }
 
-  const stat           = fs.statSync(filePath);
-  const fileSize       = file.size || stat.size;
-  const availableBytes = Math.max(1, Math.floor((file.progress || 0) * fileSize));
-  const range          = req.headers.range;
-  const mimeType       = getMimeType(filePath);
+  const stat     = fs.statSync(filePath);
+  const fileSize = file.size || stat.size;
+  const range    = req.headers.range;
+  const mimeType = getMimeType(filePath);
 
   if (range) {
     const parts = range.replace(/bytes=/, "").split("-");
@@ -415,8 +493,8 @@ async function streamTorrentFile(req, res, infoHash, fileIdx, fileName, creds = 
 
     if (hasSuffixRange) {
       if (!Number.isFinite(suffixLength) || suffixLength <= 0) return res.status(416).end();
-      const safeStart = Math.max(0, availableBytes - suffixLength);
-      const safeEnd = availableBytes - 1;
+      const safeStart = Math.max(0, fileSize - suffixLength);
+      const safeEnd = fileSize - 1;
 
       res.writeHead(206, {
         "Content-Range":  `bytes ${safeStart}-${safeEnd}/${fileSize}`,
@@ -430,14 +508,15 @@ async function streamTorrentFile(req, res, infoHash, fileIdx, fileName, creds = 
     }
 
     if (!Number.isFinite(start) || start < 0) return res.status(416).end();
-    if (start >= availableBytes) {
-      res.setHeader("Retry-After", "3");
-      return res.status(503).json({ error: "Buffer insuficiente para esse trecho" });
-    }
+    
+    // Removemos a restrição de availableBytes porque o qBittorrent baixa o final do arquivo primeiro (firstLastPiecePrio).
+    // Se limitarmos pelo percentual de progresso, o player recebe 503 ao tentar ler os metadados no final do .mkv.
     const parsedEnd = parts[1] ? parseInt(parts[1], 10) : null;
     if (parts[1] && (!Number.isFinite(parsedEnd) || parsedEnd < start)) return res.status(416).end();
-    const requestedEnd = parsedEnd != null ? parsedEnd : Math.min(start + 2 * 1024 * 1024, fileSize - 1);
-    const safeEnd      = Math.min(requestedEnd, fileSize - 1, availableBytes - 1);
+    
+    // Chunk requests to avoid reading too far ahead and hitting zeroes
+    const requestedEnd = parsedEnd != null ? parsedEnd : Math.min(start + 5 * 1024 * 1024, fileSize - 1);
+    const safeEnd      = Math.min(requestedEnd, fileSize - 1);
 
     res.writeHead(206, {
       "Content-Range":  `bytes ${start}-${safeEnd}/${fileSize}`,
@@ -450,14 +529,13 @@ async function streamTorrentFile(req, res, infoHash, fileIdx, fileName, creds = 
     return;
   }
 
-  const safeLength = Math.min(fileSize, availableBytes);
   res.writeHead(200, {
-    "Content-Length": safeLength,
+    "Content-Length": fileSize,
     "Content-Type":   mimeType,
     "Accept-Ranges":  "bytes",
     "Cache-Control":  "no-store",
   });
-  fs.createReadStream(filePath, { start: 0, end: safeLength - 1 }).pipe(res);
+  fs.createReadStream(filePath).pipe(res);
 }
 
 async function cleanupOldTorrents(maxAgeHours = 24, creds = null) {

@@ -2,7 +2,8 @@ const express = require("express");
 const router = express.Router();
 const path = require("path");
 const crypto = require("crypto");
-const { isConfigured: isQbitConfigured, ensureTorrentReady, getPlayableLocalFile, streamTorrentFile } = require("../providers/qbittorrent");
+const axios = require("axios");
+const { isConfigured: isQbitConfigured, ensureTorrentReady, getPlayableLocalFile, streamTorrentFile, waitForBuffer } = require("../providers/qbittorrent");
 const { ENV, CACHE_VERSION, STREAM_CACHE_VERSION, TORRENT_DOWNLOAD_TIMEOUT_MS } = require("../constants");
 const { rc, redis, saveQbitJob, loadQbitJob } = require("../cache");
 const { decodeUserCfg, resolvePrefs } = require("../configStore");
@@ -159,15 +160,13 @@ router.get("/:userConfig/debrid-add/:provider/:infoHash", async (req, res) => {
     console.log(`[ON-DEMAND] Adicionando ${infoHash} ao ${provider}...`);
     try {
       if (isST) {
-        const FormData = require("form-data");
-        const form = new FormData();
-        if (torrentBuffer) {
-           form.append("torrent", torrentBuffer, { filename: "file.torrent" });
-        } else {
-           form.append("magnet", magnet);
-        }
-        const headers = { ...form.getHeaders(), "X-StremThru-Store-Name": stStoreName, "X-StremThru-Store-Authorization": `Bearer ${stToken}` };
-        const addRes = await axios.post(`${stUrl}/v0/store/magnets`, form, { headers, validateStatus: () => true });
+        const payload = { magnet };
+        const headers = { 
+          "Content-Type": "application/json",
+          "X-StremThru-Store-Name": stStoreName, 
+          "X-StremThru-Store-Authorization": `Bearer ${stToken}` 
+        };
+        const addRes = await axios.post(`${stUrl}/v0/store/magnets`, payload, { headers, validateStatus: () => true });
         if (addRes.status >= 400) {
            console.log(`[ON-DEMAND] Falha StremThru Add:`, addRes.data);
         } else {
@@ -184,7 +183,7 @@ router.get("/:userConfig/debrid-add/:provider/:infoHash", async (req, res) => {
            }
         }
       } else if (isTB) {
-        const { torboxAddTorrent } = require("./debrid");
+        const { torboxAddTorrent } = require("../debrid");
         const tbResult = await torboxAddTorrent(magnet, config.torboxKey, false, torrentBuffer, { infoHash });
         if (!tbResult) {
           console.log(`[ON-DEMAND] Falha ao adicionar ao TorBox (pode já estar na fila ou erro de API)`);
@@ -198,7 +197,7 @@ router.get("/:userConfig/debrid-add/:provider/:infoHash", async (req, res) => {
               await rc.del(lockKey);
               return res.redirect(302, url);
             }
-            const { resolveDebridStream } = require("./debrid");
+            const { resolveDebridStream } = require("../debrid");
             const stream = await resolveDebridStream(infoHash, magnet, "", seasonParam, episodeParam, isAnimeParam, config, null, null, tbResult, null);
             if (stream?.url) {
               await rc.del(lockKey);
@@ -207,7 +206,7 @@ router.get("/:userConfig/debrid-add/:provider/:infoHash", async (req, res) => {
           }
         }
       } else if (isRD) {
-        const { rdAddTorrent } = require("./debrid");
+        const { rdAddTorrent } = require("../debrid");
         const ok = await rdAddTorrent(magnet, config.rdKey, torrentBuffer);
         if (!ok) {
           console.log(`[ON-DEMAND] Falha ao adicionar ao RD`);
@@ -288,7 +287,7 @@ router.get("/:userConfig/debrid-add/:provider/:infoHash", async (req, res) => {
             const url = `https://api.torbox.app/v1/api/torrents/requestdl?token=${config.torboxKey}&torrent_id=${tid}&file_id=${encodeURIComponent(requestedFileId)}&redirect=true`;
             return res.redirect(302, url);
           }
-          const { resolveDebridStream } = require("./debrid");
+          const { resolveDebridStream } = require("../debrid");
           const stream = await resolveDebridStream(infoHash, magnet, "", seasonParam, episodeParam, isAnimeParam, config, null, null, torrent, null);
           if (stream?.url) return res.redirect(302, stream.url);
         }
@@ -388,8 +387,10 @@ router.get("/:userConfig/qbit/:jobToken", async (req, res) => {
         torrentBuffer, magnet: job.magnet, fileIdx: job.fileIdx, fileName: job.fileName, creds: qbitCreds,
       });
 
-      // 4. Verifica de novo se já tem buffer suficiente para reproduzir
-      playable = await getPlayableLocalFile(job.infoHash, job.fileIdx, job.fileName, qbitCreds);
+      // 4. Aguarda até que o torrent tenha buffer suficiente para reproduzir (bloqueia o request)
+      await waitForBuffer(job.infoHash, job.fileIdx, job.fileName, qbitCreds);
+      
+      let playable = await getPlayableLocalFile(job.infoHash, job.fileIdx, job.fileName, qbitCreds);
 
       if (!playable) {
         // Ainda não tem buffer — responde imediatamente e deixa o player tentar em 5s.

@@ -50,16 +50,16 @@ const {
   markTorrentDownloadFailed, infoHashQueueKey, InfoHashQueue, infoHashQueue, resolveInfoHash
 } = require("../torrentUtils");
 const {
-  jackettFetchIndexers, fetchIndexerPrivacyMap, jackettSearch, buildQueries, resolveSearchIndexers
+  jackettFetchIndexers, fetchIndexerPrivacyMap, jackettSearch, buildQueries, resolveSearchIndexers, parseStreamId
 } = require("../jackettSearch");
 const {
   getPreferredRssIndexers, loadRssItemsForType, rssCatalogMetaId, getRssItemToken,
   parseRssMetaId, parseRssItemId, extractSeriesFeedMarker, extractAnimeFeedMarker,
   buildRssVideos, findRssItemByToken, matchRssItemsByMarker
 } = require("../rssHelpers");
-const { fetchStremThruStoreLinks } = require("../debrid");
+const { fetchStremThruStoreLinks, buildMagnet, resolveDebridStream } = require("../debrid");
 const { fetchTmdbMeta, getImdbIdFromTmdb } = require("../metadata");
-const { enrichWithTorrentData, enrichJackettResults, EXTRA_TRACKERS, extractTrackers } = require("../torrentEnrich");
+const { enrichWithTorrentData, enrichJackettResults, EXTRA_TRACKERS, extractTrackers, injectTrackers } = require("../torrentEnrich");
 
 
 router.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {
@@ -551,10 +551,9 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
           const streams = onDemandStreams || [p2pStream].filter(Boolean);
 
           const qbitCreds = null;
-          // No fallback StremThru, oferece QB para qualquer resultado se qbit estiver ativo
-          const qbitEnabledForPrefs = isQbitEnabledForPrefs(prefs, qbitCreds) && resolved?.infoHash;
-          if (qbitEnabledForPrefs && resolved?.infoHash) stQbitCandidates++;
-          if (qbitEnabledForPrefs && resolved?.infoHash) {
+          const qbitEnabledForPrefs = shouldOfferQbitForResult(prefs, isPrivateTracker, qbitCreds) && resolved?.infoHash;
+          if (qbitEnabledForPrefs) stQbitCandidates++;
+          if (qbitEnabledForPrefs) {
             let torrentB64 = null;
             if (resolved.buffer) {
               try { torrentB64 = injectTrackers(resolved.buffer).toString("base64"); }
@@ -858,7 +857,7 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
     console.log(`[SCRAP] Recebidos ${scrapStreams.length} streams de ${ENV.scrapManifests.length} addon(s) externo(s) (${torrentCount} torrent, ${usenetCount} usenet)`);
     
     const scrapCandidates = scrapStreams.map(s => {
-      const titleText = s._title || "";
+      const titleText = s._title || [s.title, s.name, s.description, s.behaviorHints?.filename].filter(Boolean).join("\n") || "Scrap Stream";
       const fname = s._filename || s.behaviorHints?.filename || "";
       const hash = s.infoHash || (s.url && s.url.match(/btih:([a-f0-9]{40})/i)?.[1]) || null;
       const streamUrl = s.url || s.externalUrl || null;
@@ -1064,7 +1063,7 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
     if (isDebridMode && !prefs.stConfig && withHashes.length > 0) {
       const _tDebrid = Date.now();
       const { mode, torboxKey, rdKey } = prefs.debridConfig;
-      const { rdBatchCheckCache, torboxBatchCheckCache } = require("./debrid");
+      const { rdBatchCheckCache, torboxBatchCheckCache } = require("../debrid");
 
       const privateHashes = new Set(
         withHashes.filter(r => !r.MagnetUri && r._resolved?.buffer).map(r => r._resolved.infoHash)
@@ -1115,8 +1114,43 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
       });
       console.log(`[DEBRID] cached=${debridCached.size} uncached=${withHashes.length - debridCached.size}`);
       console.log(`[PERF] debrid=${Date.now() - _tDebrid}ms`);
-    } else if (prefs.stConfig) {
-      console.log(`[STREMTHRU] Proxy ativo - cache check desabilitado`);
+    } else if (prefs.stConfig && withHashes.length > 0) {
+      console.log(`[STREMTHRU] Executando cache check nativo via API do StremThru...`);
+      const _tDebrid = Date.now();
+      const allHashesST = [...new Set(withHashes.map(r => String(r._resolved?.infoHash || "").toLowerCase()).filter(Boolean))];
+      const stCacheMap = {};
+      const axios = require("axios");
+
+      for (const store of prefs.stConfig.stores) {
+        const chunked = [];
+        for (let i = 0; i < allHashesST.length; i += 5) chunked.push(allHashesST.slice(i, i + 5));
+
+        for (const chunk of chunked) {
+          await Promise.all(chunk.map(async hash => {
+             try {
+                const checkRes = await axios.get(`${prefs.stConfig.url}/v0/store/magnets/check?magnet=${hash}`, {
+                   headers: { "X-StremThru-Store-Name": store.c, "X-StremThru-Store-Authorization": `Bearer ${store.t}` },
+                   validateStatus: () => true, timeout: 6000
+                });
+                if (checkRes.status === 200 && checkRes.data?.data?.items) {
+                   const torrent = checkRes.data.data.items.find(t => t.hash?.toLowerCase() === hash);
+                   if (torrent && (torrent.status === "downloaded" || (torrent.files && torrent.files.length > 0))) {
+                      stCacheMap[hash] = true;
+                   }
+                }
+             } catch (e) {}
+          }));
+        }
+      }
+
+      let cachedCount = 0;
+      for (const r of withHashes) {
+         if (r._resolved?.infoHash && stCacheMap[r._resolved.infoHash.toLowerCase()]) {
+            r._isCached = true;
+            cachedCount++;
+         }
+      }
+      console.log(`[STREMTHRU] Cache check concluído em ${Date.now() - _tDebrid}ms. Cacheados: ${cachedCount}`);
     }
 
     const availabilityFiltered = (() => {

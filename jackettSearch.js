@@ -582,7 +582,7 @@ async function resolveSearchIndexers(prefs, isAnime) {
   return generalPool.length > 0 ? generalPool : pool;
 }
 
-module.exports = {
+module.exports = { parseStreamId,
   jackettFetchIndexers,
   fetchIndexerPrivacyMap,
   jackettSearch,

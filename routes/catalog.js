@@ -2,6 +2,7 @@ const express = require("express");
 const router = express.Router();
 const path = require("path");
 const crypto = require("crypto");
+const axios = require("axios");
 const { ENV, CACHE_VERSION, STREAM_CACHE_VERSION, TORRENT_DOWNLOAD_TIMEOUT_MS } = require("../constants");
 const { rc, redis, saveQbitJob, loadQbitJob } = require("../cache");
 const { decodeUserCfg, resolvePrefs } = require("../configStore");
