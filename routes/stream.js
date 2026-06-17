@@ -3,7 +3,7 @@ const router = express.Router();
 const path = require("path");
 const crypto = require("crypto");
 const { isConfigured: isQbitConfigured, ensureTorrentReady, getPlayableLocalFile, streamTorrentFile } = require("../providers/qbittorrent");
-const { ENV, CACHE_VERSION, STREAM_CACHE_VERSION, TORRENT_DOWNLOAD_TIMEOUT_MS, PUBLIC_TRACKERS, BAD_RE, BAD_EXT_RE } = require("../constants");
+const { ENV, CACHE_VERSION, STREAM_CACHE_VERSION, TORRENT_DOWNLOAD_TIMEOUT_MS, PUBLIC_TRACKERS, BAD_RE, BAD_EXT_RE, QB_EXTRA_SLOTS, MIN_STREAM_SEEDS, STREMTHRU_PROXY_TIMEOUT_MS } = require("../constants");
 const { rc, redis, saveQbitJob, loadQbitJob } = require("../cache");
 const { decodeUserCfg, resolvePrefs } = require("../configStore");
 const { normalizePrefs, sanitizeUserPrefs, clampNumber, defaultPrefs } = require("../prefs");
@@ -41,6 +41,9 @@ const {
   resultIndexerText, isPriorityIndexerResult, isRdExcludedResult,
   hasDirectInfoHash, formatStream
 } = require("../scoring");
+const { decodeXmlEntities } = require("../jackettSearch"); // Fallback for some strings
+
+const streamWaiters = new Map();
 const {
   base32ToHex, extractInfoHash, extractInfoBuf, decodeBencode, extractTorrentFiles,
   pickEpisodeFile, normalizeTorrentLink, torrentFailureKeys, torrentDownloadRecentlyFailed,
@@ -56,7 +59,7 @@ const {
 } = require("../rssHelpers");
 const { fetchStremThruStoreLinks } = require("../debrid");
 const { fetchTmdbMeta, getImdbIdFromTmdb } = require("../metadata");
-const { enrichWithTorrentData, enrichJackettResults } = require("../torrentEnrich");
+const { enrichWithTorrentData, enrichJackettResults, EXTRA_TRACKERS, extractTrackers } = require("../torrentEnrich");
 
 
 router.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {

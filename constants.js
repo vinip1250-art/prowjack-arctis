@@ -24,11 +24,20 @@ const PUBLIC_TRACKERS = ["1337x", "thepiratebay", "eztv", "yts", "torrentgalaxy"
 const BAD_RE = /\b(cam|hdcam|camrip|workprint)\b/i;
 const BAD_EXT_RE = /\.(iso|r\d{2}|zip|rar|7z|tar|gz|zipx|arj|txt|nfo|jpg|png|pdf|exe|bat|cmd|scr|msi|ps1|vbs|js|jar|com|pif|reg|dll|sys|lnk|url)$/i;
 
+const TORRENT_FAILURE_TTL = 3600000;
+const STREMTHRU_PROXY_TIMEOUT_MS = 15000;
+const QB_EXTRA_SLOTS = 5;
+const MIN_STREAM_SEEDS = 1;
+
 module.exports = {
   ENV,
   CACHE_VERSION,
   STREAM_CACHE_VERSION,
   TORRENT_DOWNLOAD_TIMEOUT_MS,
+  TORRENT_FAILURE_TTL,
+  STREMTHRU_PROXY_TIMEOUT_MS,
+  QB_EXTRA_SLOTS,
+  MIN_STREAM_SEEDS,
   PUBLIC_TRACKERS,
   BAD_RE,
   BAD_EXT_RE
