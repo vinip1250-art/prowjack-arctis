@@ -508,6 +508,7 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
           // on-demand debrid: usa infoHash, hash do magnet, ou link .torrent (nessa ordem).
           const onDemandStreams = hasDebrid
             ? (() => {
+                if (isPrivateTracker) return null; // Proxy Debrid falha com trackers privados
                 let debridHash = effectiveHash;
                 let extraLink  = debridLink;
                 let bingeKey;
