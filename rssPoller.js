@@ -247,7 +247,7 @@ async function saveToRedis(rc, indexerId, indexerName, items, skipCatalog = fals
     console.log(`[RSS] ${indexerName} (${type}): ${list.length} itens salvos`);
   }
 
-  if (!skipCatalog) setImmediate(() => updateCatalog(rc, items).catch(() => {}));
+  if (!skipCatalog) setImmediate(() => updateCatalog(rc, items, indexerId).catch(() => {}));
 }
 
 async function saveHashesOnly(rc, indexerId, indexerName, items) {
@@ -264,7 +264,7 @@ async function saveHashesOnly(rc, indexerId, indexerName, items) {
   }
 }
 
-async function updateCatalog(rc, newItems) {
+async function updateCatalog(rc, newItems, indexerId = null) {
   const byType = { movie: [], series: [], anime: [] };
   for (const item of newItems) {
     const t = item._rssType === "anime" ? "anime" : item._rssType === "series" ? "series" : "movie";
@@ -359,6 +359,15 @@ async function updateCatalog(rc, newItems) {
     const CATALOG_KEY = "rss:catalog";
     await rc.set(`${CATALOG_KEY}:${type}`, JSON.stringify(merged), CATALOG_TTL);
     console.log(`[RSS Catalog] ${type}: +${resolved.length} novos (total ${merged.length})`);
+  }
+
+  // Salva os itens atualizados (agora com ImdbId descoberto) de volta no cache raw
+  if (indexerId) {
+    for (const [type, list] of Object.entries(byType)) {
+      if (!list.length) continue;
+      const key = buildRssCacheKey(indexerId, type);
+      await rc.set(key, JSON.stringify(list), 86400 * 3).catch(() => {});
+    }
   }
 }
 
