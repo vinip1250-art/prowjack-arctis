@@ -140,7 +140,7 @@ router.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {
 
         const streamObj = {
           name: `\n${addonName}\n${resLabel || "Links"}`,
-          description: [description, filenameLine, isPrivateTracker ? "🔒 Tracker Privado" : ""].filter(Boolean).join("\\n"),
+          description: [description, filenameLine, isPrivateTracker ? "🔒 Tracker Privado" : ""].filter(Boolean).join("\n"),
           behaviorHints: { notWebReady: false },
         };
 
