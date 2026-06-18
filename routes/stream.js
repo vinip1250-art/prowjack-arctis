@@ -538,6 +538,14 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
               if (isPrio) r._priorityIndexer = true;
               return isPrio || !prefs.skipBadReleases || !BAD_RE.test(r.Title || "");
             })
+            .filter(r => r._priorityIndexer || type !== "movie" || !looksLikeEpisodeRelease(r.Title || ""))
+            .filter(r => {
+              if (r._priorityIndexer) return true;
+              if (prefs.keywordBoost && matchesKeywordBoost(r.Title || "", prefs.keywordBoost)) return true;
+              if (!prefs.onlyDubbed || !_stQbPriorityLang) return true;
+              const langs = getLangs(r.Title || "", parsed.isAnime);
+              return langs.some(l => l.code === _stQbPriorityLang);
+            })
             .sort((a, b) =>
               (((b._priorityIndexer ? 1 : 0) * 5000000) + score(b, prefs.weights, parsed.isAnime, _stQbPriorityLang)) -
               (((a._priorityIndexer ? 1 : 0) * 5000000) + score(a, prefs.weights, parsed.isAnime, _stQbPriorityLang))

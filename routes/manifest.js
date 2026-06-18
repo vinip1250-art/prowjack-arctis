@@ -106,8 +106,8 @@ router.get("/:userConfig/manifest.json", async (req, res) => {
   const catalogFilter = (process.env.RSS_CATALOG_INDEXERS || "").trim();
   // O catálogo aparece apenas se enableCatalog=true E a variável de ambiente estiver configurada
   if (prefs.enableCatalog && catalogFilter) {
-    if (enabledCats.includes("movie"))  catalogs.push({ type: "movie",  id: "prowjack_rss_movie",  name: `${name} - Recentes` });
-    if (enabledCats.includes("series")) catalogs.push({ type: "series", id: "prowjack_rss_series", name: `${name} - Recentes` });
+    if (enabledCats.includes("movie"))  catalogs.push({ type: "movie",  id: "prowjack_rss_movie",  name: `${name} - Recentes`, extra: [{ name: "skip", isRequired: false }] });
+    if (enabledCats.includes("series")) catalogs.push({ type: "series", id: "prowjack_rss_series", name: `${name} - Recentes`, extra: [{ name: "skip", isRequired: false }] });
   }
 
   res.json({
