@@ -421,13 +421,23 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
         });
       combined.push(...stStreams);
 
-      // 2) Fallback quando StremThru não retornou debrid resolvido:
-      // Oferece on-demand debrid e QB se habilitado. P2P nunca exibido quando debrid configurado.
-      if (stStreams.length === 0) {
-        const _stPriorityLang = prefs.priorityLang ?? "pt-br";
-        const _stCandidates = jackettResults
-          .filter(r => r?.InfoHash || r?.MagnetUri || r?.Link)
-          .filter(r => {
+      // 2) Fallback para complementar o StremThru proxy:
+      // Se StremThru não retornou nada, processa todos (fallback completo).
+      // Se StremThru retornou streams, o proxy funcionou, mas ignorou trackers privados sem magnet (pq o internal esconde eles).
+      // Então filtramos para processar APENAS o que o proxy ignorou!
+      const needsFullFallback = stStreams.length === 0;
+
+      const _stPriorityLang = prefs.priorityLang ?? "pt-br";
+      const _stCandidates = jackettResults
+        .filter(r => r?.InfoHash || r?.MagnetUri || r?.Link)
+        .filter(r => {
+           if (!needsFullFallback) {
+              const hasHash = !!(r.InfoHash || r.MagnetUri);
+              if (hasHash) return false; // Se tem hash, o proxy do StremThru já analisou
+           }
+           return true;
+        })
+        .filter(r => {
             const isPrio = isPriorityIndexerResult(r, prefs);
             if (isPrio) r._priorityIndexer = true;
             return isPrio || !prefs.skipBadReleases || !BAD_RE.test(r.Title || "");
@@ -583,11 +593,11 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
         const p2pStreams = p2pStreamsNested.flat().filter(Boolean);
         console.log(`[QB] StremThru candidatos com hash=${_stWithHashes.length} privados=${stPrivateCandidates} elegiveis=${stQbitCandidates} qbit=${isQbitEnabledForPrefs(prefs, qbitCreds) ? "on" : "off"} modo=${prefs.qbitMode}`);
         combined.push(...p2pStreams);
-      }
 
       // 3) QB como complemento QUANDO o StremThru JÁ retornou debrid
-      // O bloco P2P acima só roda quando stStreams.length === 0.
-      // Quando há debrid disponível (stStreams.length > 0), os streams QB ainda devem
+      // O bloco P2P acima agora roda sempre, mas filtra apenas o que o proxy ignorou.
+      // Porém, ele gerou streams [QB] para os trackers privados.
+
       // ser gerados para que o usuário possa baixar via qBittorrent mesmo com debrid ativo.
       if (stStreams.length > 0 && isQbitEnabledForPrefs(prefs, qbitCreds)) {
         const stQbExtraSlotsNow = prefs.qbExtraSlots ?? QB_EXTRA_SLOTS;
