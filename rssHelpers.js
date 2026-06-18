@@ -1,8 +1,7 @@
 "use strict";
 const { rc } = require("./cache");
 const { normalizeImdbId, isCompletePack } = require("./scoring");
-
-const CACHE_VERSION = 5;
+const { CACHE_VERSION } = require("./constants");
 
 function toBase64Url(str) {
   return Buffer.from(str).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
