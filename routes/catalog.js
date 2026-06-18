@@ -55,7 +55,7 @@ const {
   buildRssVideos, findRssItemByToken, matchRssItemsByMarker
 } = require("../rssHelpers");
 const { fetchStremThruStoreLinks } = require("../debrid");
-const { fetchTmdbMeta, getImdbIdFromTmdb } = require("../metadata");
+const { fetchTmdbMeta, getImdbIdFromTmdb, enrichMetaPtBr } = require("../metadata");
 const { enrichWithTorrentData, enrichJackettResults } = require("../torrentEnrich");
 const { CATALOG_KEY } = require("../rssPoller");
 
