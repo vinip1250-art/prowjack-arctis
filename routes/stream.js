@@ -466,6 +466,7 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
 
         let stPrivateCandidates = 0;
         let stQbitCandidates = 0;
+        const qbitCreds = await require("../qbit").getQbitCredentials(prefs).catch(() => null);
         const p2pStreamsNested = await Promise.all(_stWithHashes.slice(0, maxOut).map(async r => {
           const resolved = r._resolved;
           const indexerName = r._indexerName || r.Tracker || r.TrackerId || r.Indexer || "Unknown";
@@ -550,7 +551,6 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
 
           const streams = onDemandStreams || [p2pStream].filter(Boolean);
 
-          const qbitCreds = null;
           const qbitEnabledForPrefs = shouldOfferQbitForResult(prefs, isPrivateTracker, qbitCreds) && resolved?.infoHash;
           if (qbitEnabledForPrefs) stQbitCandidates++;
           if (qbitEnabledForPrefs) {
