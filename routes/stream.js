@@ -146,61 +146,7 @@ router.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {
 
       const stStores = prefs.stConfig?.stores || [];
 
-// Na rota interna, é SEMPRE requisição do StremThru.
-if (stStores.length > 0 && isPrivateTracker && (r.Link && !r.Link.startsWith("magnet:"))) {
-
-
-        const store = stStores[0];
-
-
-        const storeCodeMap2 = { torbox: "torbox", realdebrid: "realdebrid" };
-
-
-        const provider = storeCodeMap2[store.c] || store.c;
-
-
-        const crypto = require("crypto");
-
-
-        const effectiveHash = resolved.infoHash || r.InfoHash || crypto.createHash("sha1").update(r.Link).digest("hex");
-
-
-        const linkQs = `&link=${encodeURIComponent(r.Link)}`;
-
-
-        const seasonParam  = parsed.season  != null ? `&season=${parsed.season}`   : "";
-
-
-        const episodeParam = (parsed.episode ?? episode) != null ? `&episode=${parsed.episode ?? episode}` : "";
-
-
-        const animeParam   = parsed.isAnime ? "&anime=1" : "";
-
-
-        const publicBase = getPublicBase(req);
-
-
-        const effectiveMagnet = buildMagnet(effectiveHash, r.MagnetUri, r.Title);
-
-
-        
-
-
-        streamObj.url = `${publicBase}/${req.params.userConfig}/debrid-add/stremthru-${provider}/${effectiveHash}?magnet=${encodeURIComponent(effectiveMagnet)}${linkQs}${seasonParam}${episodeParam}${animeParam}`;
-
-
-        streamObj.name = `
-${addonName}
-⚡ ${resLabel || "Links"} [${store.c.toUpperCase()}]`;
-
-
-        streamObj.behaviorHints.notWebReady = true;
-
-
-        streamObj.behaviorHints.bingeGroup = `prowjack|st-ondemand-link|${effectiveHash}`;
-
-
-      } else if (resolved.infoHash) {
+if (resolved.infoHash) {
 
 
         let trackerList = [];
@@ -242,28 +188,6 @@ ${addonName}
         streamObj.behaviorHints.bingeGroup = `prowjack|${resolved.infoHash}`;
 
 
-      } else if (resolved.url) {
-        const stStores = prefs.stConfig?.stores || [];
-          
-          if (stStores.length > 0 && resolved.url.startsWith("http")) {
-          const store = stStores[0];
-          const storeCodeMap2 = { torbox: "torbox", realdebrid: "realdebrid" };
-          const provider = storeCodeMap2[store.c] || store.c;
-          const crypto = require("crypto");
-          const debridHash = crypto.createHash("sha1").update(resolved.url).digest("hex");
-          const linkQs = `&link=${encodeURIComponent(resolved.url)}`;
-          const seasonParam  = parsed.season  != null ? `&season=${parsed.season}`   : "";
-          const episodeParam = (parsed.episode ?? episode) != null ? `&episode=${parsed.episode ?? episode}` : "";
-          const animeParam   = parsed.isAnime ? "&anime=1" : "";
-          const publicBase = getPublicBase(req);
-          
-          streamObj.url = `${publicBase}/${req.params.userConfig}/debrid-add/stremthru-${provider}/${debridHash}?${linkQs}${seasonParam}${episodeParam}${animeParam}`;
-          streamObj.name = `\n${addonName}\n⬇️ ${resLabel || "Links"} [${store.c.toUpperCase()}]`;
-          streamObj.behaviorHints.notWebReady = true;
-          streamObj.behaviorHints.bingeGroup = `prowjack|st-ondemand-link|${debridHash}`;
-        } else {
-          streamObj.url = resolved.url;
-        }
       } else {
         return null;
       }
