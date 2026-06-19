@@ -1429,12 +1429,20 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
               : (resolved.infoHash ? [buildMagnet(resolved.infoHash, null, r.Title)] : []);
             if (!sources.length) return null;
             
+            if (isPrivateTracker && !r._isCached) {
+              if (shouldOfferQbitForResult(prefs, isPrivateTracker, qbitCreds)) {
+                return await buildQbitStream();
+              }
+              return null;
+            }
+            
             const storeCodeMap = { torbox: "TB", realdebrid: "RD" };
             const desc = [description, filenameLine].filter(Boolean).join("\n");
             const bh   = { filename: displayFileName, videoSize: displayFile?.size, bingeGroup: `prowjack|${resolved.infoHash}`, notWebReady: true };
+            const cacheEmoji = r._isCached ? "??" : "??";
             return prefs.stConfig.stores.map(s => {
               const tag = storeCodeMap[s.c] || s.c.toUpperCase();
-              return { name: `${name.split("\n")[0]}\n⬇️ ${resLabel || "Links"} [${tag}]`, description: desc, url: sources[0], _sourceType: "debrid", _priorityIndexer: !!r._priorityIndexer, behaviorHints: bh };
+              return { name: `${name.split("\n")[0]}\n${cacheEmoji} ${resLabel || "Links"} [${tag}]`, description: desc, url: sources[0], _sourceType: "debrid", _priorityIndexer: !!r._priorityIndexer, behaviorHints: bh };
             });
           }
 
