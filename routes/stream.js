@@ -624,12 +624,15 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
       const limitedNormal = normalPool.slice(0, maxOut);
       
       const stQbExtraSlots = prefs.qbExtraSlots ?? QB_EXTRA_SLOTS;
-      const normalKeys = new Set(limitedNormal.map(s => s.infoHash || s.behaviorHints?.bingeGroup || s.url).filter(Boolean));
       const qbExtra = combined
         .filter(isQbStream)
-        .filter(s => {
-          const key = s.infoHash || s.behaviorHints?.bingeGroup || s.url;
-          return !key || !normalKeys.has(key);
+        .sort((a, b) => {
+          const seedA = (a._seeders || a.Seeders || 0);
+          const seedB = (b._seeders || b.Seeders || 0);
+          if (seedB !== seedA) return seedB - seedA;
+          const sizeA = (a._sizeGb || a.Size || 0);
+          const sizeB = (b._sizeGb || b.Size || 0);
+          return sizeB - sizeA;
         })
         .slice(0, stQbExtraSlots);
       if (qbExtra.length) console.log(`[QB] ${qbExtra.length} streams [QB] adicionados no modo StremThru (QB_EXTRA_SLOTS=${stQbExtraSlots})`);
@@ -1579,12 +1582,16 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
 
       const normalKeys = new Set(limitedNormal.map(s => s.infoHash || s.behaviorHints?.bingeGroup || s.url).filter(Boolean));
       const qbExtra = dedupedStreams
-        .filter(isQbStream)
-        .filter(s => {
-          const key = s.infoHash || s.behaviorHints?.bingeGroup || s.url;
-          return !key || !normalKeys.has(key);
-        })
-        .slice(0, QB_EXTRA_SLOTS);
+          .filter(isQbStream)
+          .sort((a, b) => {
+            const seedA = (a._seeders || a.Seeders || 0);
+            const seedB = (b._seeders || b.Seeders || 0);
+            if (seedB !== seedA) return seedB - seedA;
+            const sizeA = (a._sizeGb || a.Size || 0);
+            const sizeB = (b._sizeGb || b.Size || 0);
+            return sizeB - sizeA;
+          })
+          .slice(0, QB_EXTRA_SLOTS);
 
       if (qbExtra.length) console.log(`[QB] ${qbExtra.length} streams [QB] adicionados como slots extras (QB_EXTRA_SLOTS=${QB_EXTRA_SLOTS})`);
       return [...limitedNormal, ...qbExtra];
@@ -1639,3 +1646,4 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
 });
 
 module.exports = router;
+
