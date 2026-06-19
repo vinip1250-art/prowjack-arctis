@@ -7,7 +7,9 @@ const {
   uniq, 
   normalizeImdbId, 
   extractReleaseYear, 
-  dedupeResults 
+  dedupeResults,
+  seriesEpisodeMatches,
+  animeEpisodeMatches
 } = require("./scoring");
 
 const ENV = {
@@ -305,6 +307,31 @@ async function trackMetrics(indexer, ms, count, ok) {
   await rc.set(key, JSON.stringify(m), 86400);
 }
 
+function filterBadMatches(results, parsed) {
+  if (!parsed || (parsed.season == null && parsed.episode == null && parsed.type !== "movie")) return results;
+  return results.filter(r => {
+    if (!r.Title) return false;
+    
+    // Filtro agressivo para sries: exclui resultados que nǜo correspondem   temporada/episdio pesquisado
+    if (parsed.type === "series" && parsed.season != null && parsed.episode != null) {
+      if (!parsed.isAnime) {
+        if (!seriesEpisodeMatches(r.Title, parsed.season, parsed.episode)) {
+          console.log(`[Filtro Estrito] Removido falso positivo Srie (T${parsed.season}E${parsed.episode}): ${r.Title}`);
+          return false;
+        }
+      } else {
+        if (!animeEpisodeMatches(r.Title, parsed.episode)) {
+          console.log(`[Filtro Estrito] Removido falso positivo Anime (E${parsed.episode}): ${r.Title}`);
+          return false;
+        }
+      }
+    }
+    
+    // Filtro de ano para filmes (s para evitar resultados totalmente errados se tiver um ano na pesquisa, mas opcional por enquanto)
+    return true;
+  });
+}
+
 async function jackettSearch(plan, indexers, prefs) {
   const t0 = Date.now();
   const jUrl      = (prefs?.jackett?.url || ENV.jackettUrl).replace(/\/+$/, "");
@@ -350,7 +377,7 @@ async function jackettSearch(plan, indexers, prefs) {
   ]);
 
   fastPhaseActive = false;
-  const fastFlat    = [...resultsByIndexer.values()].flat();
+  const fastFlat    = filterBadMatches([...resultsByIndexer.values()].flat(), plan?.parsed);
   const fastDeduped = prefs.dedupe !== false ? dedupeResults(fastFlat) : fastFlat;
   if (resultsByIndexer.size < indexers.length) {
     fastDeduped._incomplete = true;
@@ -360,7 +387,7 @@ async function jackettSearch(plan, indexers, prefs) {
 
   Promise.all(searchPromises).then(async (allResults) => {
     try {
-      const slowFlat    = allResults.flat();
+      const slowFlat    = filterBadMatches(allResults.flat(), plan?.parsed);
       const slowDeduped = prefs.dedupe !== false ? dedupeResults(slowFlat) : slowFlat;
       const t2 = Date.now();
       if (slowDeduped.length > fastDeduped.length) {

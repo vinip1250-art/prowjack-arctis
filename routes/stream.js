@@ -906,9 +906,9 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
             const episodeRank  = parsed.isAnime ? animeEpisodeMatchRank(r.Title || "", episode) : episodeMatchRank(r.Title || "", parsed.season, parsed.episode);
             const minScore     = parsed.isAnime ? 0.34 : (type === "series" && episodeRank >= 2 ? 0.2 : 0.45);
             const finalScore   = Math.max(sc, type === "series" ? relaxedScore * 0.8 : 0);
-            if (hasLang && finalScore > 0) r._titleMatchScore = Math.max(r._titleMatchScore || 0, 1);
+            if (hasLang && finalScore >= 0.1) r._titleMatchScore = Math.max(r._titleMatchScore || 0, 1);
             r._titleMatchScore = Math.max(r._titleMatchScore || 0, finalScore);
-            return finalScore >= minScore || (hasLang && finalScore > 0);
+            return finalScore >= minScore || (hasLang && finalScore >= 0.1);
           })
           .filter(r => { if (r._priorityIndexer) return true; if (type !== "movie" || !year) return true; const ry = extractReleaseYear(r.Title || ""); return !ry || Math.abs(ry - year) <= 1; })
           .map(r => {
