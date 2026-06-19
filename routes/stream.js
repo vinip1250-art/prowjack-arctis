@@ -301,18 +301,47 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
       const indexersForFallback = await resolveSearchIndexers(prefs, parsed.isAnime);
       const fastPath = await getRssFastPathResults(parsed, prefs, type);
       const fallbackPromise = fastPath ? Promise.resolve(fastPath) : jackettSearch({ parsed, queries, search }, indexersForFallback, prefs);
-      const [proxyStreams, jackettResults] = await Promise.all([
-        proxyManifestUrl
-          ? fetchScrapStreams(proxyManifestUrl, type, id, { timeout: STREMTHRU_PROXY_TIMEOUT_MS, label: "STREMTHRU", preserveBadges: true, prefs })
-          : Promise.resolve([]),
-        fallbackPromise,
-      ]);
+      const [proxyStreams, jackettResults, scrapResultsRaw] = await Promise.all([
+          proxyManifestUrl
+            ? fetchScrapStreams(proxyManifestUrl, type, id, { timeout: STREMTHRU_PROXY_TIMEOUT_MS, label: "STREMTHRU", preserveBadges: true, prefs })
+            : Promise.resolve([]),
+          fallbackPromise,
+          ENV.scrapManifests && ENV.scrapManifests.length > 0
+            ? Promise.all(ENV.scrapManifests.map(async (m, idx) => {
+                const streams = await fetchScrapStreams(m, type, id, { prefs });
+                console.log(`[SCRAP ${idx}] ${m.slice(0, 60)}... → ${streams.length} streams`);
+                let scrapName = "Scrap Externo";
+                try {
+                  const host = new URL(m).hostname;
+                  const parts = host.split('.');
+                  let rawName = parts.length >= 2 ? (parts[0] === 'www' || parts[0] === 'api' ? parts[1] : parts[0]) : host;
+                  scrapName = rawName.charAt(0).toUpperCase() + rawName.slice(1);
+                } catch {}
+                return streams.map(s => ({ ...s, _scrapName: scrapName }));
+              }))
+            : Promise.resolve([])
+        ]);
       if (jackettResults._incomplete) reqCtx.hasTimedOut = true;
       console.log(`[PERF] stremthru=${Date.now() - _stStart}ms`);
       console.log(`[STREMTHRU] ${proxyStreams.length} streams do proxy | ${jackettResults.length} do Jackett`);
 
       // Constrói streams finais combinando os dois resultados
       const combined = [];
+      
+      const extScrapStreams = scrapResultsRaw.flat().map(s => {
+        const desc = [s.description || s.title || "", s._scrapName ? `🔌 ${s._scrapName}` : ""]
+          .filter(Boolean).join("\n");
+        return {
+          ...s,
+          description: desc,
+          _sourceType: "debrid",
+          _cached: true,
+        };
+      });
+      if (extScrapStreams.length) {
+        console.log(`[STREMTHRU] ${extScrapStreams.length} streams de addons externos adicionados`);
+        combined.push(...extScrapStreams);
+      }
 
       // Streams do StremThru: somente streams COM url = debrid efetivamente resolvido.
       // Quando StremThru não tem o torrent em cache, passa os streams P2P brutos do
