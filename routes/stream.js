@@ -641,7 +641,12 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
       const qbitCount = finalStreamsCombined.filter(isQbStream).length;
 
       // Remove campos internos antes de enviar ao Stremio
-      const finalStreams = finalStreamsCombined.map(s => {
+      const isStremThruProxyClient = /stremthru|go-http-client/i.test(req.headers["user-agent"] || "");
+        let finalStreamsToProcess = finalStreamsCombined;
+        if (ENV.enablePureP2P === false && !isStremThruProxyClient) {
+          finalStreamsToProcess = finalStreamsToProcess.filter(s => s._sourceType !== "p2p");
+        }
+        const finalStreams = finalStreamsToProcess.map(s => {
         delete s._cached; delete s._sourceType; delete s._scrapSource;
         delete s._stremThruProxy; delete s._title; delete s._seeders;
         delete s._sizeGb; delete s._sizeBytes; delete s._priorityIndexer;
@@ -1535,7 +1540,7 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
       return (b._seeders || 0) - (a._seeders || 0);
     });
 
-    const finalStreams = (() => {
+    let finalStreams = (() => {
       const isQbStream = s => s?._sourceType === "http" && typeof s.url === "string" && s.url.includes("/qbit/");
 
       const applyCoverage = (pool, limit) => {
@@ -1600,7 +1605,11 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
       const top = dedupedStreams.slice(0, Math.min(5, dedupedStreams.length));
       console.log(`[ORDEM] top${top.length}: ` + top.map(s => `[cache=${s._cached?1:0} prio=${s._priorityIndexer?1:0} lang=${_hasPriorityLang(s)?1:0} key=${_hasKeyword(s)?1:0} prioRank=${_priorityIndexerRank(s)} size=${_sizeScore(s).toFixed(1)} res=${_resScore(s).toFixed(1)} qb=${s._sourceType==="http"?1:0} ix=${s._indexerKey||"?"}] ${(s._title||"").slice(0,40)}`).join(" | "));
     }
-    finalStreams.forEach(s => {
+    const isStremThruProxyClient = /stremthru|go-http-client/i.test(req.headers["user-agent"] || "");
+      if (ENV.enablePureP2P === false && !isStremThruProxyClient) {
+        finalStreams = finalStreams.filter(s => s._sourceType !== "p2p");
+      }
+      finalStreams.forEach(s => {
       delete s._cached;
       delete s._originalScore;
       delete s._title;
