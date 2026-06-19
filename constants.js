@@ -7,6 +7,7 @@ const ENV = {
   accessToken:     (process.env.ACCESS_TOKEN || "").trim(),
   scrapManifests:  (process.env.SCRAP_MANIFEST_URLS || "").split(",").map(s => s.trim()).filter(Boolean),
   stremThruUrl:    (process.env.STREMTHRU_URL || "").trim().replace(/\/+$/, ""),
+  enablePureP2P:   process.env.ENABLE_PURE_P2P !== "false",
   rssUpdateIntervalMinutes: parseInt(process.env.RSS_UPDATE_INTERVAL_MINUTES || "30", 10),
   qbitConfig: {
     url:      (process.env.QBIT_URL || "").trim().replace(/\/+$/, ""),
