@@ -319,8 +319,13 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
       // addon interno (infoHash/sources sem url). Esses NÃO são debrid — são descartados
       // aqui para que o fallback on-demand abaixo os trate corretamente.
       const stStreams = proxyStreams
-        .filter(s => !!s.url)  // apenas url = debrid resolvido; infoHash/sources = P2P raw descartado
-        .map(s => {
+          .filter(s => !!s.url)
+          .filter(s => {
+             const isPrivate = String(s.description || "").includes("Tracker Privado");
+             const isUncached = String(s.name || "").includes("⬇️");
+             return !(isPrivate && isUncached);
+          })
+          .map(s => {
           let desc = s.description || s.title || "";
           const filename = s.behaviorHints?.filename;
           if (filename && !desc.includes(filename)) {
