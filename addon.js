@@ -45,7 +45,7 @@ app.use("/", require("./routes/qbit"));
 app.use("/", require("./routes/stream"));
 
 app.listen(ENV.port, () => {
-  console.log(`ProwJack v3.2.2 -> http://localhost:${ENV.port}/configure`);
+  console.log(`ProwJack v3.2.3 -> http://localhost:${ENV.port}/configure`);
   console.log(`   Jackett : ${ENV.jackettUrl}`);
   console.log(`   Redis   : ${ENV.redisUrl}`);
   console.log(`   qBittorrent: ${isQbitConfigured() ? "ativo" : "desativado"}`);

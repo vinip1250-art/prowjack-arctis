@@ -60,7 +60,7 @@ const { enrichWithTorrentData, enrichJackettResults } = require("../torrentEnric
 
 router.get("/manifest.json", (req, res) => {
   res.json({
-    id: "org.prowjack.pro", version: "3.2.2", name: "ProwJack",
+    id: "org.prowjack.pro", version: "3.2.3", name: "ProwJack",
     logo: `${getPublicBase(req)}/logo.svg`,
     icon: `${getPublicBase(req)}/logo.svg`,
     description: "Qbittorrent+Prowlarr/Jackett+Debrid+Filtros por keywords",
@@ -78,7 +78,7 @@ router.get("/internal/:userConfig/manifest.json", async (req, res) => {
     const types = [...new Set((prefs.categories || ["movie", "series"]).map(c => c === "movies" ? "movie" : c === "anime" ? "series" : c))];
     res.json({
       id: `org.prowjack.internal.${req.params.userConfig}`,
-      version: "3.2.2",
+      version: "3.2.3",
       name: `${name} Internal`,
       description: "Upstream interno do ProwJack para StremThru",
       logo: `${getPublicBase(req)}/logo.svg`,
@@ -88,7 +88,7 @@ router.get("/internal/:userConfig/manifest.json", async (req, res) => {
       behaviorHints: { configurable: false, configurationRequired: false },
     });
   } catch (err) {
-    res.json({ id: `org.prowjack.internal.err`, version: "3.2.2", name: "ProwJack Internal (Error)", resources: [], types: [], catalogs: [] });
+    res.json({ id: `org.prowjack.internal.err`, version: "3.2.3", name: "ProwJack Internal (Error)", resources: [], types: [], catalogs: [] });
   }
 });
 
@@ -111,7 +111,7 @@ router.get("/:userConfig/manifest.json", async (req, res) => {
   }
 
   res.json({
-    id: "org.prowjack.pro", version: "3.2.2", name,
+    id: "org.prowjack.pro", version: "3.2.3", name,
     logo: `${getPublicBase(req)}/logo.svg`,
     icon: `${getPublicBase(req)}/logo.svg`,
     description: "Qbittorrent+Prowlarr/Jackett+Debrid+Filtros por keywords",
