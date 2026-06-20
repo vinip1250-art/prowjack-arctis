@@ -359,11 +359,18 @@ async function jackettSearch(plan, indexers, prefs) {
   const resultsByIndexer = new Map();
   let fastPhaseActive = true;
 
+  let _resolveEarly;
+  const earlyPromise = new Promise(r => { _resolveEarly = r; });
+
   const searchPromises = indexers.map(async (indexer) => {
     try {
       const res = await jackettSearchOneIndexer(indexer, plan, SLOW_TIMEOUT, FAST_TIMEOUT, jUrl, jKey);
       if (fastPhaseActive) {
         resultsByIndexer.set(indexer, res);
+        const currentTotal = [...resultsByIndexer.values()].flat().length;
+        if (currentTotal >= (prefs.maxResults ? prefs.maxResults * 1.5 : 40)) {
+          _resolveEarly();
+        }
       }
       return res;
     } catch {
@@ -373,7 +380,8 @@ async function jackettSearch(plan, indexers, prefs) {
 
   await Promise.race([
     Promise.all(searchPromises),
-    new Promise(resolve => setTimeout(resolve, FAST_TIMEOUT))
+    new Promise(resolve => setTimeout(resolve, FAST_TIMEOUT)),
+    earlyPromise
   ]);
 
   fastPhaseActive = false;
