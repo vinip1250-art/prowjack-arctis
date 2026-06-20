@@ -4,15 +4,26 @@ const fs     = require("fs");
 const { normalizePrefs } = require("./prefs");
 const path   = require("path");
 
-// ─── ENV refs (passados como argumento para evitar dependência circular) ─────
-// configDbUrl e configDbTable são lidos de ENV no caller (addon.js / módulos).
+// Lidos diretamente do ambiente para que rotas e streams compartilhem a mesma
+// persistência sem depender de cada chamador repassar esses valores.
+function getConfigDbUrl(value) {
+  return value || process.env.CONFIG_DATABASE_URL || process.env.POSTGRES_URL || process.env.DATABASE_URL || "";
+}
+
+function getConfigDbTable(value) {
+  const table = value || process.env.CONFIG_DATABASE_TABLE || "prowjack_configs";
+  if (!/^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(table)) {
+    throw new Error("CONFIG_DATABASE_TABLE inválida");
+  }
+  return table;
+}
 
 // ─── Postgres ────────────────────────────────────────────────────────────────
 let configPgPool = null;
 let configPgInit = null;
 
 function shouldUseConfigDb(configDbUrl) {
-  return !!configDbUrl;
+  return !!getConfigDbUrl(configDbUrl);
 }
 
 function buildConfigPgOptions(rawUrl) {
@@ -36,6 +47,7 @@ function buildConfigPgOptions(rawUrl) {
 }
 
 function getConfigPgPool(configDbUrl) {
+  configDbUrl = getConfigDbUrl(configDbUrl);
   if (!shouldUseConfigDb(configDbUrl)) return null;
   if (configPgPool) return configPgPool;
   let Pool;
@@ -49,6 +61,8 @@ function getConfigPgPool(configDbUrl) {
 }
 
 async function ensureConfigDb(configDbUrl, configDbTable) {
+  configDbUrl = getConfigDbUrl(configDbUrl);
+  configDbTable = getConfigDbTable(configDbTable);
   const pool = getConfigPgPool(configDbUrl);
   if (!pool) return null;
   if (!configPgInit) {
@@ -66,6 +80,8 @@ async function ensureConfigDb(configDbUrl, configDbTable) {
 }
 
 async function cfgDbLoad(id, configDbUrl, configDbTable) {
+  configDbUrl = getConfigDbUrl(configDbUrl);
+  configDbTable = getConfigDbTable(configDbTable);
   const pool = await ensureConfigDb(configDbUrl, configDbTable);
   if (!pool) return null;
   const r = await pool.query(`SELECT payload FROM ${configDbTable} WHERE id = $1`, [id]);
@@ -74,6 +90,8 @@ async function cfgDbLoad(id, configDbUrl, configDbTable) {
 }
 
 async function cfgDbSave(id, prefs, configDbUrl, configDbTable) {
+  configDbUrl = getConfigDbUrl(configDbUrl);
+  configDbTable = getConfigDbTable(configDbTable);
   const pool = await ensureConfigDb(configDbUrl, configDbTable);
   if (!pool) return false;
   await pool.query(
@@ -116,6 +134,8 @@ function cfgStore() {
 
 // ─── saveStoredConfig / loadStoredUserCfg ────────────────────────────────────
 async function saveStoredConfig(prefs, configDbUrl, configDbTable) {
+  configDbUrl = getConfigDbUrl(configDbUrl);
+  configDbTable = getConfigDbTable(configDbTable);
   const id = crypto.createHash("sha256").update(JSON.stringify(prefs)).digest("base64url").slice(0, 32);
   if (shouldUseConfigDb(configDbUrl)) {
     await cfgDbSave(id, prefs, configDbUrl, configDbTable);
@@ -141,6 +161,8 @@ async function loadStoredUserCfg(str, configDbUrl, configDbTable) {
   if (!str || typeof str !== "string" || !str.startsWith("cfg_")) return null;
   const id = str.slice(4);
   if (!/^[A-Za-z0-9_-]{20,80}$/.test(id)) return null;
+  configDbUrl = getConfigDbUrl(configDbUrl);
+  configDbTable = getConfigDbTable(configDbTable);
   if (shouldUseConfigDb(configDbUrl)) {
     const dbPayload = await cfgDbLoad(id, configDbUrl, configDbTable);
     if (dbPayload) return dbPayload;

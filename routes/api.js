@@ -7,7 +7,7 @@ const { isConfigured: isQbitConfigured, ensureTorrentReady, getPlayableLocalFile
 const { ENV, CACHE_VERSION, STREAM_CACHE_VERSION, TORRENT_DOWNLOAD_TIMEOUT_MS } = require("../constants");
 const { rc, redis, saveQbitJob, loadQbitJob } = require("../cache");
 const { decodeUserCfg, saveStoredConfig } = require("../configStore");
-const { normalizePrefs, sanitizeUserPrefs, clampNumber, defaultPrefs } = require("../prefs");
+const { normalizePrefs, sanitizeUserPrefs, validateServiceUrl, clampNumber, defaultPrefs } = require("../prefs");
 const {
   getPublicBase,
   buildStremThruProxyManifestUrl,
@@ -142,7 +142,9 @@ router.get("/api/indexers", async (req, res) => {
   } catch (err) {
     return res.status(400).json({ ok: false, error: err.message, indexers: [] });
   }
-  const key = (req.query.key || "").trim() || ENV.apiKey;
+  // Evita expor a chave manual na URL, no histórico do navegador e em logs.
+  // O query param permanece como compatibilidade temporária com clientes antigos.
+  const key = String(req.headers["x-jackett-api-key"] || req.query.key || "").trim() || ENV.apiKey;
   try   {
     const [indexers, privacyMap] = await Promise.all([
       jackettFetchIndexers(url, key),

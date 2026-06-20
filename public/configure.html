@@ -256,6 +256,7 @@ hr{border:none;border-top:1px solid var(--bord);margin:14px 0}
               <input type="text" id="jackettKey" placeholder="API Key"/>
             </div>
           </div>
+          <div class="info mt8">A instância manual é usada nas buscas deste manifest. O catálogo RSS em segundo plano continua usando a instância global do servidor.</div>
         </div>
 
         <div>
@@ -680,10 +681,12 @@ async function loadIndexers() {
   try {
     const params = new URLSearchParams();
     if (jackettUrl) params.set('url', jackettUrl);
-    if (jackettKey) params.set('key', jackettKey);
     const token = document.getElementById('accessToken').value.trim();
+    const headers = {};
+    if (token) headers['X-Access-Token'] = token;
+    if (jackettKey) headers['X-Jackett-Api-Key'] = jackettKey;
     const data = await fetch(`/api/indexers?${params}`, {
-      headers: token ? { 'X-Access-Token': token } : {},
+      headers,
     }).then(r => r.json());
     if (!data.ok) {
       grid.innerHTML = `<div class="ix-empty">${data.error || 'Falha'}</div>`;

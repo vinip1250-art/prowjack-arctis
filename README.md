@@ -1,3 +1,12 @@
+---
+title: ProwJack
+emoji: 🎬
+colorFrom: indigo
+colorTo: purple
+sdk: docker
+app_port: 7860
+---
+
 # 🎬 ProwJack
 
 **ProwJack** é um addon avançado para Stremio (v3.2.3) que integra indexadores do **Jackett** e **Prowlarr** com serviços Debrid (**Real-Debrid**, **TorBox**), **StremThru**, e **qBittorrent** nativo. Desenvolvido para oferecer a melhor experiência de streaming com foco em velocidade, cache inteligente e priorização de conteúdo.
@@ -89,6 +98,30 @@ docker-compose up -d
 * **Auto-hospedado:** Seus dados e chaves de API não passam por servidores de terceiros.
 * **Proteção de Acesso:** O `.env` suporta a variável `ACCESS_TOKEN` para travar o addon contra acessos indesejados.
 * **Validação Rígida:** Proteções nativas contra *Path Traversal*, *ReDoS* e controle restrito de *CORS*.
+
+---
+
+## 🤗 Hugging Face Spaces
+
+O projeto pode ser publicado como um **Docker Space**. O `Dockerfile` já inicia o addon na porta `7860`.
+
+Configure em **Settings → Variables and secrets**:
+
+- Secrets: `JACKETT_API_KEY`, `ACCESS_TOKEN` e chaves Debrid.
+- Variables: `JACKETT_URL`, `ADDON_PUBLIC_URL` e demais opções não sensíveis.
+- `JACKETT_URL` deve ser um endereço externo HTTPS, normalmente na porta `443`. O Hugging Face bloqueia conexões de saída para portas como `9117`, `9696`, `6379` e `5432`.
+- Para preservar os manifests `cfg_...`, anexe um **Storage Bucket** gravável em `/data`. Alternativamente, use `CONFIG_DATABASE_URL` apenas se o PostgreSQL estiver exposto por uma porta permitida pelo Space.
+- O plano gratuito entra em suspensão quando o Space fica ocioso. Para addon e catálogo RSS sempre disponíveis, use hardware pago ou outra hospedagem contínua.
+
+Exemplo:
+
+```env
+PORT=7860
+ADDON_PUBLIC_URL=https://SEU-SPACE.hf.space
+JACKETT_URL=https://prowlarr.seudominio.com
+JACKETT_API_KEY=...
+CONFIG_DATA_DIR=/data
+```
 
 ---
 
