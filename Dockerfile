@@ -1,16 +1,15 @@
 FROM node:20-slim
 
-RUN useradd -m -u 1000 user \
-    && mkdir -p /data /home/user/app \
-    && chown -R user:user /data /home/user
+RUN mkdir -p /data /home/node/app \
+    && chown -R node:node /data /home/node
 
-USER user
-WORKDIR /home/user/app
+USER node
+WORKDIR /home/node/app
 
-COPY --chown=user:user package.json package-lock.json ./
+COPY --chown=node:node package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-COPY --chown=user:user . .
+COPY --chown=node:node . .
 
 ENV NODE_ENV=production \
     PORT=7860 \
