@@ -67,7 +67,7 @@ router.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {
     const { userConfig, type, id } = req.params;
     // Carrega prefs mas força modo P2P puro (sem debrid/StremThru) para ser upstream
     const rawPrefs = await resolvePrefs(userConfig);
-      const prefs = { ...rawPrefs, debrid: false, stConfig: null, enableP2P: true, timeout: Math.min(rawPrefs.timeout || 8000, 4500) };
+      const prefs = { ...rawPrefs, debrid: false, stConfig: null, enableP2P: true, slowThreshold: Math.min(rawPrefs.slowThreshold || 8000, 4500), timeout: Math.min(rawPrefs.timeout || 8000, 4500) };
     delete prefs.debridConfig;
     delete prefs.stConfig;
 
@@ -291,6 +291,7 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
     if (type === "movie" && !enabledCats.includes("movie"))                      { releaseLock(); return res.json({ streams: [] }); }
 
     if (isStremThruMode) {
+      prefs.slowThreshold = Math.min(prefs.slowThreshold || 8000, 4500);
       prefs.timeout = Math.min(prefs.timeout || 8000, 4500);
       const _stStart = Date.now();
       const maxOut = prefs.maxResults || 20;
