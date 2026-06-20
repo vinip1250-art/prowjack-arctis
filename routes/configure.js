@@ -59,9 +59,8 @@ const { enrichWithTorrentData, enrichJackettResults } = require("../torrentEnric
 
 
 router.get("/configure", (_, res) => sendConfigurePage(res));
-
 router.get("/:userConfig/configure", (_, res) => sendConfigurePage(res));
-
-router.get("/", (_, res) => res.redirect("/configure"));
+router.get("/", (_, res) => sendConfigurePage(res));
+router.get("/health", (_, res) => res.status(200).send("OK"));
 
 module.exports = router;
