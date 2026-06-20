@@ -7,6 +7,6 @@ RUN npm install
 
 COPY . .
 
-EXPOSE 7014
+EXPOSE 7860
 
 CMD ["node", "addon.js"]
