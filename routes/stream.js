@@ -67,7 +67,7 @@ router.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {
     const { userConfig, type, id } = req.params;
     // Carrega prefs mas força modo P2P puro (sem debrid/StremThru) para ser upstream
     const rawPrefs = await resolvePrefs(userConfig);
-      const prefs = { ...rawPrefs, debrid: false, stConfig: null, enableP2P: true, slowThreshold: Math.min(rawPrefs.slowThreshold || 8000, 2000), timeout: Math.min(rawPrefs.timeout || 8000, 2000) };
+      const prefs = { ...rawPrefs, debrid: false, stConfig: null, enableP2P: true, slowThreshold: (rawPrefs.slowThreshold || 8000), timeout: (rawPrefs.timeout || 8000) };
     delete prefs.debridConfig;
     delete prefs.stConfig;
 
@@ -111,7 +111,7 @@ router.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {
         while (idx < candidates.length) {
           const i = idx++;
           const cand = candidates[i];
-          const resolved = await resolveInfoHash(cand, { ...reqCtx, fastOnly: true });
+          const resolved = await resolveInfoHash(cand, { ...reqCtx, fastOnly: false });
           if (resolved?.infoHash) {
             results2[i] = { ...cand, _resolved: resolved };
           } else if (cand.MagnetUri || cand.Link) {
@@ -291,8 +291,8 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
     if (type === "movie" && !enabledCats.includes("movie"))                      { releaseLock(); return res.json({ streams: [] }); }
 
     if (isStremThruMode) {
-      prefs.slowThreshold = Math.min(prefs.slowThreshold || 8000, 2000);
-      prefs.timeout = Math.min(prefs.timeout || 8000, 2000);
+      prefs.slowThreshold = (prefs.slowThreshold || 8000);
+      prefs.timeout = (prefs.timeout || 8000);
       const _stStart = Date.now();
       const maxOut = prefs.maxResults || 20;
       const proxyManifestUrl = buildStremThruProxyManifestUrl(req, prefs, req.params.userConfig);
@@ -336,8 +336,7 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
         return {
           ...s,
           description: desc,
-          _sourceType: "debrid",
-          _cached: true,
+          _sourceType: "http",
         };
       });
       if (extScrapStreams.length) {
@@ -423,7 +422,7 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
           async function _worker() {
             while (_idx < _stCandidates.length) {
               const i = _idx++;
-              const resolved = await resolveInfoHash(_stCandidates[i], { ...reqCtx, fastOnly: true });
+              const resolved = await resolveInfoHash(_stCandidates[i], { ...reqCtx, fastOnly: false });
               // Aceita mesmo sem infoHash se houver Link (trackers privados)
               if (resolved?.infoHash || _stCandidates[i].Link) {
                 _res[i] = { ..._stCandidates[i], _resolved: resolved || { infoHash: null, files: null, buffer: null } };
@@ -595,7 +594,7 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
           async function _qbWorker() {
             while (_qbIdx < _stQbCandidates.length) {
               const i = _qbIdx++;
-              const resolved = await resolveInfoHash(_stQbCandidates[i], { ...reqCtx, fastOnly: true });
+              const resolved = await resolveInfoHash(_stQbCandidates[i], { ...reqCtx, fastOnly: false });
               if (resolved?.infoHash) {
                 _stQbResolved[i] = { ..._stQbCandidates[i], _resolved: resolved };
               }
