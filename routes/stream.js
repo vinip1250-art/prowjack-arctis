@@ -1189,7 +1189,18 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
         try {
           // Scrap sem infoHash (link direto/usenet) já vem resolvido pelo addon externo.
           if (r._scrapSource && r._scrapStream && !r._resolved?.infoHash) {
-            return r._scrapStream;
+            const ss = r._scrapStream;
+            const desc = [ss.description || ss.title || "", ss._scrapName ? `📂 ${ss._scrapName}` : ""]
+              .filter(Boolean).join("\n");
+            return {
+              name: ss.name || `[Scrap] ${ss._scrapName || ""}`,
+              description: desc,
+              url: ss.url,
+              externalUrl: ss.externalUrl,
+              behaviorHints: ss.behaviorHints || { notWebReady: false },
+              _sourceType: "http",
+              _cached: true
+            };
           }
           
           const resolved     = r._resolved;
