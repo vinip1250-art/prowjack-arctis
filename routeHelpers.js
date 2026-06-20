@@ -205,7 +205,12 @@ async function fetchScrapStreams(manifestUrl, type, id, options = {}) {
         };
       });
   } catch (err) {
-    if (options.label) console.log(`[WARN] Timeout`);
+    if (options.label) {
+      const reason = err.code === "ECONNABORTED"
+        ? `timeout após ${options.timeout || 8000}ms`
+        : err.message;
+      console.log(`[WARN] ${options.label}: ${reason}`);
+    }
     return [];
   }
 }
