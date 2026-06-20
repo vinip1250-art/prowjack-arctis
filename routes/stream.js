@@ -88,9 +88,9 @@ router.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {
         if (isPrio) r._priorityIndexer = true;
         return isPrio || !prefs.skipBadReleases || !BAD_RE.test(r.Title || "");
       })
-      .filter(r => r._priorityIndexer || type !== "movie" || !looksLikeEpisodeRelease(r.Title || ""))
+      .filter(r => r._priorityIndexer || r._scrapSource || type !== "movie" || !looksLikeEpisodeRelease(r.Title || ""))
       .filter(r => {
-        if (r._priorityIndexer) return true;
+        if (r._priorityIndexer || r._scrapSource) return true;
         if (prefs.keywordBoost && matchesKeywordBoost(r.Title || "", prefs.keywordBoost)) return true;
         if (!prefs.onlyDubbed || !priorityLang) return true;
         const langs = getLangs(r.Title || "", parsed.isAnime);
@@ -403,7 +403,7 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
           })
           .filter(r => r._priorityIndexer || type !== "movie" || !looksLikeEpisodeRelease(r.Title || ""))
           .filter(r => {
-            if (r._priorityIndexer) return true;
+            if (r._priorityIndexer || r._scrapSource) return true;
             if (prefs.keywordBoost && matchesKeywordBoost(r.Title || "", prefs.keywordBoost)) return true;
             if (!prefs.onlyDubbed || !_stPriorityLang) return true;
             const langs = getLangs(r.Title || "", parsed.isAnime);
@@ -575,7 +575,7 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
             })
             .filter(r => r._priorityIndexer || type !== "movie" || !looksLikeEpisodeRelease(r.Title || ""))
             .filter(r => {
-              if (r._priorityIndexer) return true;
+              if (r._priorityIndexer || r._scrapSource) return true;
               if (prefs.keywordBoost && matchesKeywordBoost(r.Title || "", prefs.keywordBoost)) return true;
               if (!prefs.onlyDubbed || !_stQbPriorityLang) return true;
               const langs = getLangs(r.Title || "", parsed.isAnime);
@@ -889,11 +889,11 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
           .filter(r => {
             const isPrio = isPriorityIndexerResult(r, prefs);
             if (isPrio) r._priorityIndexer = true;
-            return isPrio || !prefs.skipBadReleases || !BAD_RE.test(r.Title || "");
+            return isPrio || r._scrapSource || !prefs.skipBadReleases || !BAD_RE.test(r.Title || "");
           })
-          .filter(r => r._priorityIndexer || type !== "movie" || !looksLikeEpisodeRelease(r.Title || ""))
+          .filter(r => r._priorityIndexer || r._scrapSource || type !== "movie" || !looksLikeEpisodeRelease(r.Title || ""))
           .filter(r => {
-            if (r._priorityIndexer) return true;
+            if (r._priorityIndexer || r._scrapSource) return true;
             if (parsed.isAnime) return animeEpisodeMatches(r.Title || "", episode);
             if (type === "series") {
               // Resultados de busca estruturada (tvsearch com season/ep) já foram filtrados
@@ -917,7 +917,7 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
             return true;
           })
           .filter(r => {
-            if (r._priorityIndexer) {
+            if (r._priorityIndexer || r._scrapSource) {
               r._titleMatchScore = Math.max(r._titleMatchScore || 0, 1);
               return true;
             }
@@ -930,7 +930,7 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
             return hasLang;
           })
           .filter(r => {
-            if (r._priorityIndexer) return true;
+            if (r._priorityIndexer || r._scrapSource) return true;
             if (r._keywordMatch || r._metaIdMatch) return true;
             const resultImdbId = getResultImdbId(r);
             if (requestedImdbId && resultImdbId && resultImdbId === requestedImdbId) {
@@ -953,7 +953,7 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
             r._titleMatchScore = Math.max(r._titleMatchScore || 0, finalScore);
             return finalScore >= minScore || (hasLang && finalScore >= 0.1);
           })
-          .filter(r => { if (r._priorityIndexer) return true; if (type !== "movie" || !year) return true; const ry = extractReleaseYear(r.Title || ""); return !ry || Math.abs(ry - year) <= 1; })
+          .filter(r => { if (r._priorityIndexer || r._scrapSource) return true; if (type !== "movie" || !year) return true; const ry = extractReleaseYear(r.Title || ""); return !ry || Math.abs(ry - year) <= 1; })
           .map(r => {
             const t       = r.Title || "";
             const langs   = getLangs(t, parsed.isAnime);
