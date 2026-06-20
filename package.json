@@ -4,11 +4,12 @@
   "description": "Qbittorrent+Prowlarr/Jackett+Debrid",
   "main": "addon.js",
   "scripts": {
-    "start": "node --env-file=.env addon.js",
-    "dev": "nodemon --env-file=.env addon.js"
+    "start": "node addon.js",
+    "dev": "nodemon addon.js"
   },
   "dependencies": {
     "axios": "^1.7.0",
+    "dotenv": "^17.4.2",
     "express": "^4.19.0",
     "form-data": "^4.0.0",
     "ioredis": "^5.3.0",

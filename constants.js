@@ -1,3 +1,5 @@
+require("dotenv").config();
+
 const ENV = {
   jackettUrl:      (process.env.JACKETT_URL || "http://localhost:9117").replace(/\/+$/, ""),
   apiKey:          (process.env.JACKETT_API_KEY || "").trim(),
