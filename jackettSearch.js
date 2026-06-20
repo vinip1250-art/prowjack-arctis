@@ -368,7 +368,7 @@ async function jackettSearch(plan, indexers, prefs) {
       if (fastPhaseActive) {
         resultsByIndexer.set(indexer, res);
         const currentTotal = [...resultsByIndexer.values()].flat().length;
-        if (currentTotal >= (prefs.maxResults || 20)) {
+        if (currentTotal >= (prefs.maxResults ? prefs.maxResults * 3 : 60)) {
           _resolveEarly();
         }
       }

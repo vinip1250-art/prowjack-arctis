@@ -372,23 +372,30 @@ async function updateCatalog(rc, newItems, indexerId = null) {
 }
 
 async function pollOnce(jUrl, jKey, rc) {
-  console.log("[RSS] Iniciando polling de indexers privados...");
+  const catalogFilter = (process.env.RSS_CATALOG_INDEXERS || "").trim();
+  if (!catalogFilter) {
+    console.log("[RSS] RSS_CATALOG_INDEXERS não configurado. Polling RSS desabilitado.");
+    return;
+  }
+
+  console.log("[RSS] Iniciando polling de indexers configurados...");
   const indexers = await fetchPrivateIndexers(jUrl, jKey);
   if (!indexers.length) {
-    console.log("[RSS] Nenhum indexer privado encontrado.");
+    console.log("[RSS] Nenhum indexer retornado da API.");
     return;
   }
   
-  const catalogFilter = (process.env.RSS_CATALOG_INDEXERS || "").trim();
-  const indexersToPoll = catalogFilter
-    ? indexers.filter(ix => {
-        const tokens = catalogFilter.toLowerCase().split(",").map(s => s.trim());
-        return tokens.includes(String(ix.id)) || tokens.some(t => ix.name.toLowerCase().includes(t));
-      })
-    : indexers;
+  const indexersToPoll = indexers.filter(ix => {
+    const tokens = catalogFilter.toLowerCase().split(",").map(s => s.trim());
+    return tokens.includes(String(ix.id)) || tokens.some(t => ix.name.toLowerCase().includes(t));
+  });
 
-  console.log(`[RSS] ${indexers.length} indexers: ${indexers.map(i => i.name).join(", ")}`);
-  if (catalogFilter) console.log(`[RSS] Polling limitado a: ${indexersToPoll.map(i => i.name).join(", ")}`);
+  if (!indexersToPoll.length) {
+    console.log(`[RSS] Nenhum dos indexers configurados (${catalogFilter}) foi encontrado.`);
+    return;
+  }
+
+  console.log(`[RSS] Polling limitado a: ${indexersToPoll.map(i => i.name).join(", ")}`);
 
   for (const ix of indexersToPoll) {
     const items = await fetchIndexerRss(jUrl, jKey, ix.id, ix.name, rc);
