@@ -170,16 +170,20 @@ function normalizeTorrentLink(link) {
   }
 }
 
-function torrentFailureKeys(link) {
-  const normalized = normalizeTorrentLink(link);
-  if (!normalized) return [];
-  return [
-    "torrent:fail:" + crypto.createHash("sha1").update(normalized).digest("hex"),
-  ];
+function torrentFailureKeys(r) {
+  const keys = [];
+  if (r && r.Link) {
+    const normalized = normalizeTorrentLink(r.Link);
+    if (normalized) keys.push("torrent:fail:" + crypto.createHash("sha1").update(normalized).digest("hex"));
+  }
+  if (r && r.Guid) {
+    keys.push("torrent:fail:guid:" + crypto.createHash("sha1").update(r.Guid).digest("hex"));
+  }
+  return keys;
 }
 
-async function torrentDownloadRecentlyFailed(link) {
-  const keys = torrentFailureKeys(link);
+async function torrentDownloadRecentlyFailed(r) {
+  const keys = torrentFailureKeys(r);
   if (!keys.length) return false;
   for (const key of keys) {
     try {
@@ -189,8 +193,8 @@ async function torrentDownloadRecentlyFailed(link) {
   return false;
 }
 
-async function markTorrentDownloadFailed(link) {
-  const keys = torrentFailureKeys(link);
+async function markTorrentDownloadFailed(r) {
+  const keys = torrentFailureKeys(r);
   if (!keys.length) return;
   await Promise.allSettled(keys.map(key => rc.set(key, "1", TORRENT_FAILURE_TTL)));
 }
@@ -277,13 +281,16 @@ async function resolveInfoHash(r, reqCtx = {}) {
   }
 
   if (httpLink) {
-    if (await torrentDownloadRecentlyFailed(httpLink)) {
+    if (await torrentDownloadRecentlyFailed(r)) {
       return null;
     }
 
     const urlHashKey = `urlhash:${crypto.createHash("sha1").update(httpLink).digest("hex")}`;
+    const guidHashKey = r.Guid ? `guidhash:${crypto.createHash("sha1").update(r.Guid).digest("hex")}` : null;
     try {
-      const cachedHashStr = await rc.get(urlHashKey);
+      let cachedHashStr = guidHashKey ? await rc.get(guidHashKey) : null;
+      if (!cachedHashStr) cachedHashStr = await rc.get(urlHashKey);
+      
       if (cachedHashStr) {
         let cachedHash = cachedHashStr;
         let isPrivate;
@@ -324,7 +331,10 @@ async function resolveInfoHash(r, reqCtx = {}) {
           const finalUrl = res.request?.res?.responseUrl || "";
           if (finalUrl.startsWith("magnet:")) {
             const h = extractInfoHash(finalUrl);
-            if (h) rc.set(urlHashKey, `${h}|0`, 7 * 24 * 3600).catch(()=>{});
+            if (h) {
+              rc.set(urlHashKey, `${h}|0`, 7 * 24 * 3600).catch(()=>{});
+              if (guidHashKey) rc.set(guidHashKey, `${h}|0`, 7 * 24 * 3600).catch(()=>{});
+            }
             return h ? { infoHash: h, files: null, buffer: null, isPrivate: false } : null;
           }
           const buf = Buffer.from(res.data);
@@ -332,7 +342,10 @@ async function resolveInfoHash(r, reqCtx = {}) {
           const bodyStr = buf.toString("utf8", 0, Math.min(buf.length, 200));
           if (bodyStr.trimStart().startsWith("magnet:")) {
             const h = extractInfoHash(bodyStr.trim());
-            if (h) rc.set(urlHashKey, `${h}|0`, 7 * 24 * 3600).catch(()=>{});
+            if (h) {
+              rc.set(urlHashKey, `${h}|0`, 7 * 24 * 3600).catch(()=>{});
+              if (guidHashKey) rc.set(guidHashKey, `${h}|0`, 7 * 24 * 3600).catch(()=>{});
+            }
             return h ? { infoHash: h, files: null, buffer: null, isPrivate: false } : null;
           }
           if (buf[0] === 0x64) {
@@ -342,20 +355,22 @@ async function resolveInfoHash(r, reqCtx = {}) {
               const isPrivate = infoBuf.toString("latin1").includes("7:privatei1e");
               rc.setBuffer(`torrent:${realHash}`, buf, 7 * 24 * 3600).catch(() => {});
               rc.set(urlHashKey, `${realHash}|${isPrivate ? 1 : 0}`, 7 * 24 * 3600).catch(() => {});
+              if (guidHashKey) rc.set(guidHashKey, `${realHash}|${isPrivate ? 1 : 0}`, 7 * 24 * 3600).catch(() => {});
               return { infoHash: realHash, files: extractTorrentFiles(buf), buffer: buf, isPrivate };
             }
           }
           return null;
         } catch (err) {
-          if (_magnetRedirect || err.isMagnetRedirect || err.cause?.isMagnetRedirect) {
+            if (_magnetRedirect || err.isMagnetRedirect || err.cause?.isMagnetRedirect) {
             const src = _magnetRedirect || err.cause?.magnetUrl;
             const h   = src ? extractInfoHash(src) : null;
             if (h) {
               rc.set(urlHashKey, `${h}|0`, 7 * 24 * 3600).catch(()=>{});
+              if (guidHashKey) rc.set(guidHashKey, `${h}|0`, 7 * 24 * 3600).catch(()=>{});
               return { infoHash: h, files: null, buffer: null, isPrivate: false };
             }
           } else {
-            await markTorrentDownloadFailed(httpLink);
+            await markTorrentDownloadFailed(r);
             const indexerMatch = httpLink.match(/https?:\/\/[^\/]+\/([^\/]+)\/download/);
             const idxId = indexerMatch ? `Indexador ${indexerMatch[1]}` : httpLink.slice(0,40)+'...';
             console.warn(`[WARN] Falha ao baixar torrent (${idxId}): ${err.message}`);

@@ -331,12 +331,14 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
       const combined = [];
       
       const extScrapStreams = scrapResultsRaw.flat().map(s => {
-        const desc = [s.description || s.title || "", s._scrapName ? `🔌 ${s._scrapName}` : ""]
+        const desc = [s.description || s.title || "", s._scrapName ? `🎥 ${s._scrapName}` : ""]
           .filter(Boolean).join("\n");
         return {
           ...s,
           description: desc,
           _sourceType: "http",
+          _cached: true,
+          _priorityIndexer: true,
         };
       });
       if (extScrapStreams.length) {
@@ -859,7 +861,9 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
         _indexerName: s._scrapName || 'Scrap Externo',
         Tracker: s._scrapName || 'Scrap Externo',
         TrackerId: 'scrap',
-        Indexer: s._scrapName || 'Scrap Externo'
+        Indexer: s._scrapName || 'Scrap Externo',
+        _priorityIndexer: true,
+        _isCached: true
       };
     });
     
