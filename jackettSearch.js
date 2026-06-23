@@ -354,7 +354,17 @@ async function jackettSearch(plan, indexers, prefs) {
   const cached    = await rc.get(cacheKey);
   if (cached) {
     console.log(`Cache HIT para buscas: ${JSON.stringify(queryList)}`);
-    return JSON.parse(cached);
+    try {
+      const parsed = JSON.parse(cached);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && parsed.results) {
+        const res = parsed.results;
+        if (parsed._incomplete) res._incomplete = true;
+        return res;
+      }
+      return parsed;
+    } catch {
+      return JSON.parse(cached);
+    }
   }
   const FAST_TIMEOUT = (prefs?.slowThreshold > 0 ? prefs.slowThreshold : 8000);
   const SLOW_TIMEOUT = 50000;
@@ -420,6 +430,9 @@ async function jackettSearch(plan, indexers, prefs) {
   }
   const t1 = Date.now();
   console.log(`[Scrape] Conclusão da janela rápida em ${t1 - t0}ms: ${fastFlat.length} brutos -> ${fastDeduped.length} ${prefs.dedupe !== false ? 'deduplicados' : 'resultados'}`);
+  if (fastDeduped.length > 0) {
+    rc.set(cacheKey, JSON.stringify({ _incomplete: fastDeduped._incomplete || false, results: fastDeduped }), 120).catch(()=>{});
+  }
 
   Promise.all(searchPromises).then(async (allResults) => {
     try {
@@ -428,9 +441,9 @@ async function jackettSearch(plan, indexers, prefs) {
       const t2 = Date.now();
       if (slowDeduped.length > fastDeduped.length) {
         console.log(`[Background] Conclusão total do scrape em ${t2 - t0}ms. Cache atualizado: ${fastDeduped.length} -> ${slowDeduped.length}`);
-        if (slowDeduped.length > 0) await rc.set(cacheKey, JSON.stringify(slowDeduped), 10800);
+        if (slowDeduped.length > 0) await rc.set(cacheKey, JSON.stringify({ _incomplete: false, results: slowDeduped }), 10800);
       } else {
-        if (fastDeduped.length > 0) await rc.set(cacheKey, JSON.stringify(fastDeduped), 10800);
+        if (fastDeduped.length > 0) await rc.set(cacheKey, JSON.stringify({ _incomplete: false, results: fastDeduped }), 10800);
       }
     } catch {}
   }).catch(() => {});
