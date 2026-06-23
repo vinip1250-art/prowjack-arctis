@@ -36,7 +36,7 @@ const TORRENT_FAILURE_TTL = 3600000;
 // consumir o timeout do indexador mais a resolução dos arquivos .torrent.
 // Com 15s, o proxy desistia enquanto a chamada ainda aquecia os caches.
 const STREMTHRU_PROXY_TIMEOUT_MS = ENV.stremThruProxyTimeoutMs;
-const QB_EXTRA_SLOTS = 5;
+const QB_EXTRA_SLOTS = parseInt(process.env.QB_EXTRA_SLOTS || "5", 10);
 const MIN_STREAM_SEEDS = 1;
 
 module.exports = {
