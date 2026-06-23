@@ -290,6 +290,11 @@ async function jackettSearchOneIndexer(indexer, plan, timeout, fastTimeout, jUrl
       }
     })();
     activeSearches.set(searchKey, searchPromise);
+    searchPromise.finally(() => {
+      if (activeSearches.get(searchKey) === searchPromise) {
+        activeSearches.delete(searchKey);
+      }
+    });
   }
   return searchPromise;
 }
@@ -361,12 +366,17 @@ async function jackettSearch(plan, indexers, prefs) {
 
   let _resolveEarly;
   const earlyPromise = new Promise(r => { _resolveEarly = r; });
+  let _resolveFirstResult;
+  const firstResultPromise = new Promise(r => { _resolveFirstResult = r; });
 
   const searchPromises = indexers.map(async (indexer) => {
     try {
       const res = await jackettSearchOneIndexer(indexer, plan, SLOW_TIMEOUT, FAST_TIMEOUT, jUrl, jKey);
       if (fastPhaseActive) {
         resultsByIndexer.set(indexer, res);
+        if (res.length > 0) {
+          _resolveFirstResult();
+        }
         const currentTotal = [...resultsByIndexer.values()].flat().length;
         if (currentTotal >= (prefs.maxResults ? prefs.maxResults * 3 : 60)) {
           _resolveEarly();
@@ -383,6 +393,24 @@ async function jackettSearch(plan, indexers, prefs) {
     new Promise(resolve => setTimeout(resolve, FAST_TIMEOUT)),
     earlyPromise
   ]);
+
+  // A janela rápida pode terminar antes de qualquer indexador responder. Nesse
+  // caso, retornar [] apenas aquece as buscas em background e faz o StremThru
+  // exibir resultados somente na segunda tentativa. Aguarda, de forma
+  // limitada, o primeiro lote útil (ou a conclusão de todos os indexadores).
+  const hasFastResults = [...resultsByIndexer.values()].some(res => res.length > 0);
+  if (!hasFastResults && resultsByIndexer.size < indexers.length) {
+    const emptyResultGraceMs = Math.min(
+      15000,
+      Math.max(2000, Number(prefs?.timeout) || FAST_TIMEOUT)
+    );
+    console.log(`[Scrape] Janela rápida vazia; aguardando primeiro resultado por até ${emptyResultGraceMs}ms`);
+    await Promise.race([
+      Promise.all(searchPromises),
+      firstResultPromise,
+      new Promise(resolve => setTimeout(resolve, emptyResultGraceMs)),
+    ]);
+  }
 
   fastPhaseActive = false;
   const fastFlat    = filterBadMatches([...resultsByIndexer.values()].flat(), plan?.parsed);

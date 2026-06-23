@@ -39,6 +39,8 @@ const STREMTHRU_PROXY_TIMEOUT_MS = ENV.stremThruProxyTimeoutMs;
 const QB_EXTRA_SLOTS = parseInt(process.env.QB_EXTRA_SLOTS || "5", 10);
 const MIN_STREAM_SEEDS = 1;
 
+console.log(`[Config] QB_EXTRA_SLOTS = ${QB_EXTRA_SLOTS} (env: ${process.env.QB_EXTRA_SLOTS})`);
+
 module.exports = {
   ENV,
   CACHE_VERSION,
