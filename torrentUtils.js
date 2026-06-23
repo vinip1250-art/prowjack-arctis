@@ -282,7 +282,7 @@ async function resolveInfoHash(r, reqCtx = {}) {
 
   if (httpLink) {
     if (await torrentDownloadRecentlyFailed(r)) {
-      return null;
+      return magnetHash ? { infoHash: magnetHash, files: null, buffer: null, isPrivate: false } : null;
     }
 
     const urlHashKey = `urlhash:${crypto.createHash("sha1").update(httpLink).digest("hex")}`;
@@ -375,7 +375,7 @@ async function resolveInfoHash(r, reqCtx = {}) {
             const idxId = indexerMatch ? `Indexador ${indexerMatch[1]}` : httpLink.slice(0,40)+'...';
             console.warn(`[WARN] Falha ao baixar torrent (${idxId}): ${err.message}`);
           }
-          return null;
+          return magnetHash ? { infoHash: magnetHash, files: null, buffer: null, isPrivate: false } : null;
         } finally {
           activeDownloads.delete(urlHashKey);
         }
@@ -395,7 +395,7 @@ async function resolveInfoHash(r, reqCtx = {}) {
       const idxId = indexerMatch ? `Indexador ${indexerMatch[1]}` : httpLink.slice(0,50)+'...';
       console.warn(`[WARN] Timeout 6s atingido em resolveInfoHash para ${idxId} (Download continua em background)`);
       reqCtx.hasTimedOut = true;
-      return null;
+      return magnetHash ? { infoHash: magnetHash, files: null, buffer: null, isPrivate: false } : null;
     }
     return result;
   }

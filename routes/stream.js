@@ -191,6 +191,8 @@ if (resolved.infoHash) {
         streamObj.behaviorHints.bingeGroup = `prowjack|${resolved.infoHash}`;
 
 
+      } else if (resolved.url) {
+        streamObj.url = resolved.url;
       } else {
         return null;
       }
