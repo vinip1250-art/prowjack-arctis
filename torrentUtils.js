@@ -338,7 +338,7 @@ async function resolveInfoHash(r, reqCtx = {}) {
             return h ? { infoHash: h, files: null, buffer: null, isPrivate: false } : null;
           }
           const buf = Buffer.from(res.data);
-          if (buf.length > 8 * 1024 * 1024) return null;
+          if (buf.length > 8 * 1024 * 1024) return magnetHash ? { infoHash: magnetHash, files: null, buffer: null, isPrivate: false } : null;
           const bodyStr = buf.toString("utf8", 0, Math.min(buf.length, 200));
           if (bodyStr.trimStart().startsWith("magnet:")) {
             const h = extractInfoHash(bodyStr.trim());
@@ -359,7 +359,7 @@ async function resolveInfoHash(r, reqCtx = {}) {
               return { infoHash: realHash, files: extractTorrentFiles(buf), buffer: buf, isPrivate };
             }
           }
-          return null;
+          return magnetHash ? { infoHash: magnetHash, files: null, buffer: null, isPrivate: false } : null;
         } catch (err) {
             if (_magnetRedirect || err.isMagnetRedirect || err.cause?.isMagnetRedirect) {
             const src = _magnetRedirect || err.cause?.magnetUrl;

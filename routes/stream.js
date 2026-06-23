@@ -140,6 +140,9 @@ router.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {
         const displayFileName = r._scrapStream?._filename || fallbackTitle;
         const filenameLine = displayFileName ? `📄 ${displayFileName}` : "";
         const isPrivateTracker = isPrivateTrackerCandidate(r, resolved);
+        
+        // StremThru Proxy can't handle private trackers via Debrid. Let the Main route handle them natively via qBittorrent.
+        if (isPrivateTracker) return null;
 
         const streamObj = {
           name: `\n${addonName}\n${resLabel || "Links"}`,
