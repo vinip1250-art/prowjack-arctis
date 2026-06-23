@@ -67,7 +67,10 @@ router.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {
     const { userConfig, type, id } = req.params;
     // Carrega prefs mas força modo P2P puro (sem debrid/StremThru) para ser upstream
     const rawPrefs = await resolvePrefs(userConfig);
-      const prefs = { ...rawPrefs, debrid: false, stConfig: null, enableP2P: true, slowThreshold: (rawPrefs.slowThreshold || 8000), timeout: (rawPrefs.timeout || 8000) };
+      // StremThru proxy connections have strict 10s timeouts. Cap fast phase to ensure we return before timeout.
+      const stMax = 5500;
+      const stPref = Math.min((rawPrefs.slowThreshold || 5000), stMax);
+      const prefs = { ...rawPrefs, debrid: false, stConfig: null, enableP2P: true, slowThreshold: stPref, timeout: stPref };
     delete prefs.debridConfig;
     delete prefs.stConfig;
 
@@ -291,8 +294,9 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
     if (type === "movie" && !enabledCats.includes("movie"))                      { releaseLock(); return res.json({ streams: [] }); }
 
     if (isStremThruMode) {
-      prefs.slowThreshold = (prefs.slowThreshold || 8000);
-      prefs.timeout = (prefs.timeout || 8000);
+      const stMax = 5500;
+      prefs.slowThreshold = Math.min((prefs.slowThreshold || 5000), stMax);
+      prefs.timeout = Math.min((prefs.timeout || 5000), stMax);
       const _stStart = Date.now();
       const maxOut = prefs.maxResults || 20;
       const proxyManifestUrl = buildStremThruProxyManifestUrl(req, prefs, req.params.userConfig);
