@@ -8,7 +8,6 @@ const {
   normalizeImdbId, 
   extractReleaseYear, 
   dedupeResults,
-  seriesEpisodeMatches,
   animeEpisodeMatches
 } = require("./scoring");
 
@@ -312,27 +311,75 @@ async function trackMetrics(indexer, ms, count, ok) {
   await rc.set(key, JSON.stringify(m), 86400);
 }
 
+/**
+ * Verifica se o título de um torrent contém o episódio alvo (temporada + episódio).
+ * Suporta:
+ *   - Episódio único:      S01E01, 1x01
+ *   - Range com traço:     S01E01-E05  (contém E01–E05)
+ *   - Range concatenado:   S01E01E03   (contém E01 e E03)
+ *   - Pack de temporada:   sem marcador SxxExx → retorna true (pode conter qualquer ep)
+ * Não é afetado por S01E012 (episódio 12) vs S01E01 graças ao lookahead (?!\d).
+ *
+ * @param {string} title
+ * @param {number} targetSeason
+ * @param {number} targetEpisode
+ * @returns {boolean} true se o título é compatível com a busca
+ */
+function titleMatchesEpisode(title, targetSeason, targetEpisode) {
+  // Formato SxxExx com range opcional e limite de dígitos (evita S01E012 → S01E01)
+  const SxEx = /S(\d{1,2})E(\d{1,2})(?:[-E](\d{1,2}))?(?!\d)/gi;
+  // Formato clássico NxNN (ex: 1x01) — dígitos 1–2 antes do "x"
+  const NxNN = /\b(\d{1,2})x(\d{2})\b/gi;
+
+  // Detecta se há QUALQUER padrão de episódio no título (inclusive formatos incomuns como S01E012)
+  // Isto distingue season packs (sem marcador) de episódios com numeração estranha
+  const hasSomeEpMarker = /S\d+E\d+|\b\d{1,2}x\d{2}\b/i.test(title);
+
+  // Sem nenhum marcador de episódio → provavelmente pack de temporada → mantém
+  if (!hasSomeEpMarker) return true;
+
+  const matchesSxEx = [...title.matchAll(SxEx)];
+  const matchesNxNN = [...title.matchAll(NxNN)];
+
+  // Checa formato SxxExx / range
+  for (const m of matchesSxEx) {
+    const mSeason  = parseInt(m[1], 10);
+    const mEpStart = parseInt(m[2], 10);
+    const mEpEnd   = m[3] ? parseInt(m[3], 10) : mEpStart;
+    if (mSeason === targetSeason && targetEpisode >= mEpStart && targetEpisode <= mEpEnd) {
+      return true;
+    }
+  }
+
+  // Checa formato NxNN
+  for (const m of matchesNxNN) {
+    const mSeason = parseInt(m[1], 10);
+    const mEp     = parseInt(m[2], 10);
+    if (mSeason === targetSeason && mEp === targetEpisode) return true;
+  }
+
+  return false;
+}
+
 function filterBadMatches(results, parsed) {
   if (!parsed || (parsed.season == null && parsed.episode == null && parsed.type !== "movie")) return results;
   return results.filter(r => {
     if (!r.Title) return false;
-    
-    // Filtro agressivo para sries: exclui resultados que nǜo correspondem   temporada/episdio pesquisado
+
     if (parsed.type === "series" && parsed.season != null && parsed.episode != null) {
       if (!parsed.isAnime) {
-        if (!seriesEpisodeMatches(r.Title, parsed.season, parsed.episode)) {
-          console.log(`[Filtro Estrito] Removido falso positivo Srie (T${parsed.season}E${parsed.episode}): ${r.Title}`);
+        if (!titleMatchesEpisode(r.Title, parsed.season, parsed.episode)) {
+          console.log(`[Filtro] Removido episódio diferente (T${parsed.season}E${parsed.episode}): ${r.Title}`);
           return false;
         }
       } else {
         if (!animeEpisodeMatches(r.Title, parsed.episode)) {
-          console.log(`[Filtro Estrito] Removido falso positivo Anime (E${parsed.episode}): ${r.Title}`);
+          console.log(`[Filtro] Removido falso positivo Anime (E${parsed.episode}): ${r.Title}`);
           return false;
         }
       }
     }
-    
-    // Filtro de ano para filmes (s para evitar resultados totalmente errados se tiver um ano na pesquisa, mas opcional por enquanto)
+
     return true;
   });
 }
@@ -401,7 +448,14 @@ async function jackettSearch(plan, indexers, prefs) {
   await Promise.race([
     Promise.all(searchPromises),
     new Promise(resolve => setTimeout(resolve, FAST_TIMEOUT)),
-    earlyPromise
+    // earlyGated só dispara quando há resultados suficientes E o mínimo de tempo decorreu.
+    // Sem esse mínimo, 3 indexers rápidos com 60+ resultados encerravam a fase rápida antes
+    // que os demais (mais lentos, mas igualmente relevantes) terminassem de responder.
+    // 35% do FAST_TIMEOUT é o piso mínimo: ex. 20 s → 7 s, 8 s → 2.8 s (nunca < 2 s).
+    Promise.all([
+      earlyPromise,
+      new Promise(r => setTimeout(r, Math.max(2000, Math.round(FAST_TIMEOUT * 0.35)))),
+    ]),
   ]);
 
   // A janela rápida pode terminar antes de qualquer indexador responder. Nesse

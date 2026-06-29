@@ -140,9 +140,7 @@ router.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {
         const displayFileName = r._scrapStream?._filename || fallbackTitle;
         const filenameLine = displayFileName ? `📄 ${displayFileName}` : "";
         const isPrivateTracker = isPrivateTrackerCandidate(r, resolved);
-        
-        // StremThru Proxy can't handle private trackers via Debrid. Let the Main route handle them natively via qBittorrent.
-        if (isPrivateTracker) return null;
+
 
         const streamObj = {
           name: `\n${addonName}\n${resLabel || "Links"}`,
@@ -359,303 +357,76 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
       // Quando StremThru não tem o torrent em cache, passa os streams P2P brutos do
       // addon interno (infoHash/sources sem url). Esses NÃO são debrid — são descartados
       // aqui para que o fallback on-demand abaixo os trate corretamente.
-      const stStreams = proxyStreams
-          .filter(s => !!s.url)
-          .filter(s => {
-             const isPrivate = String(s.description || "").includes("Tracker Privado");
-             const isUncached = String(s.name || "").includes("⬇️");
-             return !(isPrivate && isUncached);
-          })
-          .map(s => {
+      // 1) Processa streams devolvidos pelo StremThru Proxy
+      const p2pStreams = [];
+      for (const s of proxyStreams) {
+        if (s.url) {
           let desc = s.description || s.title || "";
           const filename = s.behaviorHints?.filename;
-          if (filename && !desc.includes(filename)) {
-            desc += `\n📂 ${filename}`;
-          }
-          const cleanName = (s.name || "")
-            .split("\n")
-            .map(l => l.trim())
-            .filter(Boolean)
-            .join("\n");
-          return {
+          if (filename && !desc.includes(filename)) desc += `\n📂 ${filename}`;
+          const cleanName = (s.name || "").split("\n").map(l => l.trim()).filter(Boolean).join("\n");
+          combined.push({
             ...s,
             name: cleanName || s.name,
             description: desc.trim(),
-            sources: undefined,
-            title: undefined,
-            _filename: undefined,
-            _sourceType: "debrid",
-            _stremThruProxy: true,
-            _cached: true,
-          };
-        });
-      combined.push(...stStreams);
-
-      // 2) Fallback para complementar o StremThru proxy:
-      // Se StremThru não retornou nada, processa todos (fallback completo).
-      // Se StremThru retornou streams, o proxy funcionou, mas ignorou trackers privados sem magnet (pq o internal esconde eles).
-      // Então filtramos para processar APENAS o que o proxy ignorou!
-      const needsFullFallback = stStreams.length === 0;
-
-      const _stPriorityLang = prefs.priorityLang ?? "pt-br";
-      const _stCandidates = jackettResults
-        .filter(r => r?.InfoHash || r?.MagnetUri || r?.Link)
-        .filter(r => {
-           if (!needsFullFallback) {
-              const hasHash = !!(r.InfoHash || r.MagnetUri);
-              if (hasHash) return false; // Se tem hash, o proxy do StremThru já analisou
-           }
-           return true;
-        })
-        .filter(r => {
-            const isPrio = isPriorityIndexerResult(r, prefs);
-            if (isPrio) r._priorityIndexer = true;
-            return isPrio || !prefs.skipBadReleases || !BAD_RE.test(r.Title || "");
-          })
-          .filter(r => r._priorityIndexer || type !== "movie" || !looksLikeEpisodeRelease(r.Title || ""))
-          .filter(r => {
-            if (r._priorityIndexer || r._scrapSource) return true;
-            if (prefs.keywordBoost && matchesKeywordBoost(r.Title || "", prefs.keywordBoost)) return true;
-            if (!prefs.onlyDubbed || !_stPriorityLang) return true;
-            const langs = getLangs(r.Title || "", parsed.isAnime);
-            return langs.some(l => l.code === _stPriorityLang);
-          })
-          .sort((a, b) =>
-            (((b._priorityIndexer ? 1 : 0) * 5000000) + score(b, prefs.weights, parsed.isAnime, _stPriorityLang)) -
-            (((a._priorityIndexer ? 1 : 0) * 5000000) + score(a, prefs.weights, parsed.isAnime, _stPriorityLang))
-          )
-          .slice(0, maxOut * 3);
-
-        const _stWithHashes = (await (async () => {
-          const _res = new Array(_stCandidates.length).fill(null);
-          const CONC = 8;
-          let _idx = 0;
-          async function _worker() {
-            while (_idx < _stCandidates.length) {
-              const i = _idx++;
-              const resolved = await resolveInfoHash(_stCandidates[i], { ...reqCtx, fastOnly: false });
-              // Aceita mesmo sem infoHash se houver Link (trackers privados)
-              if (resolved?.infoHash || _stCandidates[i].Link) {
-                _res[i] = { ..._stCandidates[i], _resolved: resolved || { infoHash: null, files: null, buffer: null } };
-              }
-            }
-          }
-          await Promise.all(Array.from({ length: CONC }, _worker));
-          return _res;
-        })()).filter(Boolean);
-
-        let stPrivateCandidates = 0;
-        let stQbitCandidates = 0;
-        const qbitCreds = null;
-        const p2pStreamsNested = await Promise.all(_stWithHashes.slice(0, maxOut).map(async r => {
-          const resolved = r._resolved;
-          const indexerName = r._indexerName || r.Tracker || r.TrackerId || r.Indexer || "Unknown";
-          const { name, description, resLabel } = formatStream(r, indexerName, parsed.isAnime, prefs, true, streamMeta);
-          let trackerList = [];
-          if (resolved.buffer) trackerList = extractTrackers(resolved.buffer);
-          else if (r.MagnetUri) {
-            for (const m of (r.MagnetUri.matchAll(/[&?]tr=([^&]+)/g) || [])) {
-              try { trackerList.push(decodeURIComponent(m[1])); } catch {}
-            }
-          }
-          const sources = (trackerList.length ? trackerList : EXTRA_TRACKERS)
-            .map(t => `tracker:${t}`).concat(`dht:${resolved.infoHash}`);
-            
-          const isPrivateTracker = isPrivateTrackerCandidate(r, resolved);
-          if (isPrivateTracker) stPrivateCandidates++;
-          const fallbackTitle = (r.Title && !r.Title.includes('\n')) ? r.Title : "";
-          const displayFileName = r._scrapStream?._filename || fallbackTitle;
-          const filenameLine = displayFileName ? `📂 ${displayFileName}` : "";
-            
-          const p2pName = name;
-          // No modo StremThru, envolve como on-demand debrid em vez de P2P puro
-          const stStores = prefs.stConfig?.stores || [];
-          const hasDebrid = stStores.length > 0;
-          const storeCodeMap2 = { torbox: "torbox", realdebrid: "realdebrid" };
-          const publicBase = getPublicBase(req);
-          const seasonParam  = parsed.season  != null ? `&season=${parsed.season}`   : "";
-          const episodeParam = (parsed.episode ?? episode) != null ? `&episode=${parsed.episode ?? episode}` : "";
-          const animeParam   = parsed.isAnime ? "&anime=1" : "";
-
-          // Hash efetivo: infoHash resolvido ou extraído do magnet
-          const magnetHash = !resolved?.infoHash && r.MagnetUri
-            ? (r.MagnetUri.match(/btih:([a-fA-F0-9]{40})/i)?.[1] || null)?.toLowerCase()
-            : null;
-          const effectiveHash = resolved?.infoHash || magnetHash;
-          const effectiveMagnet = buildMagnet(effectiveHash, r.MagnetUri, r.Title);
-          const debridLink = r.Link && !r.Link.startsWith("magnet:") ? r.Link : null;
-
-          // Regra central: debrid ativo → NUNCA exibir P2P.
-          // on-demand debrid: usa infoHash, hash do magnet, ou link .torrent (nessa ordem).
-          const onDemandStreams = hasDebrid
-            ? (() => {
-                let debridHash = effectiveHash;
-                let extraLink  = debridLink;
-                let bingeKey;
-
-                if (debridHash) {
-                  bingeKey = `prowjack|st-ondemand|${debridHash}`;
-                } else if (extraLink) {
-                  debridHash = crypto.createHash("sha1").update(extraLink).digest("hex");
-                  bingeKey = `prowjack|st-ondemand-link|${debridHash}`;
-                } else {
-                  return null; // sem hash nem link utilizável → descarta
-                }
-
-                const linkQs = extraLink ? `&link=${encodeURIComponent(extraLink)}` : "";
-                return stStores.map(store => {
-                  const provider = storeCodeMap2[store.c] || store.c;
-                  const tag = store.c === "torbox" ? "[TB]" : store.c === "realdebrid" ? "[RD]" : `[${store.c.toUpperCase()}]`;
-                  return {
-                    name: `${prefs.addonName || "ProwJack"}\n⬇️ ${resLabel || "Links"} ${tag}`,
-                    description: [description, filenameLine, isPrivateTracker ? "🔒 Tracker Privado" : ""].filter(Boolean).join("\n"),
-                    url: `${publicBase}/${req.params.userConfig}/debrid-add/stremthru-${provider}/${debridHash}?magnet=${encodeURIComponent(effectiveMagnet)}${linkQs}${seasonParam}${episodeParam}${animeParam}`,
-                    _sourceType: "debrid",
-                    _priorityIndexer: !!r._priorityIndexer,
-                    behaviorHints: { filename: displayFileName, notWebReady: true, bingeGroup: bingeKey },
-                  };
-                });
-              })()
-            : null; // sem debrid → P2P abaixo
-
-          // P2P: APENAS quando não há debrid configurado (hasDebrid=false).
-          // Com debrid ativo (nativo ou StremThru), nunca exibir P2P.
-          const p2pStream = hasDebrid ? null : (effectiveHash ? {
-            name: p2pName,
-            description: [description, filenameLine, isPrivateTracker ? "🔒 Tracker Privado" : ""].filter(Boolean).join("\n"),
-            infoHash: effectiveHash,
-            sources,
-            _sourceType: "p2p", _priorityIndexer: !!r._priorityIndexer,
-            behaviorHints: { filename: displayFileName, notWebReady: false, bingeGroup: `prowjack|${effectiveHash}` },
-          } : null);
-
-          const streams = onDemandStreams || [p2pStream].filter(Boolean);
-
-          const qbitEnabledForPrefs = shouldOfferQbitForResult(prefs, isPrivateTracker, qbitCreds) && resolved?.infoHash;
-          if (qbitEnabledForPrefs) stQbitCandidates++;
-          if (qbitEnabledForPrefs) {
-            let torrentB64 = null;
-            if (resolved.buffer) {
-              try { torrentB64 = injectTrackers(resolved.buffer).toString("base64"); }
-              catch { torrentB64 = resolved.buffer.toString("base64"); }
-            }
-            const jobToken = await saveQbitJob({
-              infoHash: resolved.infoHash,
-              link:     (r.Link && !r.Link.startsWith("magnet:")) ? r.Link : null,
-              magnet:   buildMagnet(resolved.infoHash, r.MagnetUri, r.Title),
-              fileIdx:  null, fileName: null, torrentB64,
-            });
-            
-            const qbitName = `${prefs.addonName || "ProwJack"}\n⬇️ ${resLabel || "Links"} [QB]`;
-            const qbitStream = {
-              name: qbitName,
-              description: [description, filenameLine, isPrivateTracker ? "🔒 Tracker Privado" : ""].filter(Boolean).join("\n"),
-              url:   `${publicBase}/${req.params.userConfig}/qbit/${jobToken}`,
-              indexer: renameIndexer(indexerName),
-              _sourceType: "http", _priorityIndexer: !!r._priorityIndexer,
-              behaviorHints: { filename: displayFileName, bingeGroup: `prowjack|qbit|${resolved.infoHash}`, notWebReady: false },
-            };
-            streams.push(qbitStream);
-          }
-          return streams;
-        }));
-        
-        const p2pStreams = p2pStreamsNested.flat().filter(Boolean);
-        console.log(`[QB] StremThru candidatos com hash=${_stWithHashes.length} privados=${stPrivateCandidates} elegiveis=${stQbitCandidates} qbit=${isQbitEnabledForPrefs(prefs, qbitCreds) ? "on" : "off"} modo=${prefs.qbitMode}`);
-        combined.push(...p2pStreams);
-
-      // 3) QB como complemento QUANDO o StremThru JÁ retornou debrid
-      // O bloco P2P acima agora roda sempre, mas filtra apenas o que o proxy ignorou.
-      // Porém, ele gerou streams [QB] para os trackers privados.
-
-      // ser gerados para que o usuário possa baixar via qBittorrent mesmo com debrid ativo.
-      if (stStreams.length > 0 && isQbitEnabledForPrefs(prefs, qbitCreds)) {
-        const stQbExtraSlotsNow = prefs.qbExtraSlots ?? QB_EXTRA_SLOTS;
-        if (stQbExtraSlotsNow > 0) {
-          const _stQbPriorityLang = prefs.priorityLang ?? "pt-br";
-          const _stQbCandidates = jackettResults
-            .filter(r => r?.InfoHash || r?.MagnetUri || r?.Link)
-            .filter(r => {
-              if (prefs.qbitMode === "private") return !r.MagnetUri && r.Link;
-              return true;
-            })
-            .filter(r => {
-              const isPrio = isPriorityIndexerResult(r, prefs);
-              if (isPrio) r._priorityIndexer = true;
-              return isPrio || !prefs.skipBadReleases || !BAD_RE.test(r.Title || "");
-            })
-            .filter(r => r._priorityIndexer || type !== "movie" || !looksLikeEpisodeRelease(r.Title || ""))
-            .filter(r => {
-              if (r._priorityIndexer || r._scrapSource) return true;
-              if (prefs.keywordBoost && matchesKeywordBoost(r.Title || "", prefs.keywordBoost)) return true;
-              if (!prefs.onlyDubbed || !_stQbPriorityLang) return true;
-              const langs = getLangs(r.Title || "", parsed.isAnime);
-              return langs.some(l => l.code === _stQbPriorityLang);
-            })
-            .sort((a, b) =>
-              (((b._priorityIndexer ? 1 : 0) * 5000000) + score(b, prefs.weights, parsed.isAnime, _stQbPriorityLang)) -
-              (((a._priorityIndexer ? 1 : 0) * 5000000) + score(a, prefs.weights, parsed.isAnime, _stQbPriorityLang))
-            )
-            .slice(0, stQbExtraSlotsNow * 3);
-
-          // Resolve apenas os infoHashes (fast-only) para os candidatos QB
-          const _stQbResolved = new Array(_stQbCandidates.length).fill(null);
-          const QB_CONC = 4;
-          let _qbIdx = 0;
-          async function _qbWorker() {
-            while (_qbIdx < _stQbCandidates.length) {
-              const i = _qbIdx++;
-              const resolved = await resolveInfoHash(_stQbCandidates[i], { ...reqCtx, fastOnly: false });
-              if (resolved?.infoHash) {
-                _stQbResolved[i] = { ..._stQbCandidates[i], _resolved: resolved };
-              }
-            }
-          }
-          await Promise.all(Array.from({ length: QB_CONC }, _qbWorker));
-          const _stQbWithHashes = _stQbResolved.filter(Boolean);
-
-          let stQbAddedCount = 0;
-          const publicBase = getPublicBase(req);
-          for (const r of _stQbWithHashes) {
-            if (stQbAddedCount >= stQbExtraSlotsNow) break;
-            const resolved = r._resolved;
-            const isPrivateTracker = isPrivateTrackerCandidate(r, resolved);
-            // Respeita qbitMode: "private" → só trackers privados; "always" → todos
-            if (!shouldOfferQbitForResult(prefs, isPrivateTracker, qbitCreds)) continue;
-            const indexerName = r._indexerName || r.Tracker || r.TrackerId || r.Indexer || "Unknown";
-            const { description, resLabel } = formatStream(r, indexerName, parsed.isAnime, prefs, true, streamMeta);
-            const fallbackTitle = (r.Title && !r.Title.includes('\n')) ? r.Title : "";
-            const displayFileName = r._scrapStream?._filename || fallbackTitle;
-            const filenameLine = displayFileName ? `📂 ${displayFileName}` : "";
-
-            let torrentB64 = null;
-            if (resolved.buffer) {
-              try { torrentB64 = injectTrackers(resolved.buffer).toString("base64"); }
-              catch { torrentB64 = resolved.buffer.toString("base64"); }
-            }
-            const jobToken = await saveQbitJob({
-              infoHash: resolved.infoHash,
-              link:     (r.Link && !r.Link.startsWith("magnet:")) ? r.Link : null,
-              magnet:   buildMagnet(resolved.infoHash, r.MagnetUri, r.Title),
-              fileIdx:  null, fileName: null, torrentB64,
-            });
-
-            combined.push({
-              name: `${prefs.addonName || "ProwJack"}\n⬇️ ${resLabel || "Links"} [QB]`,
-              description: [description, filenameLine, isPrivateTracker ? "🔒 Tracker Privado" : ""].filter(Boolean).join("\n"),
-              url: `${publicBase}/${req.params.userConfig}/qbit/${jobToken}`,
-              indexer: renameIndexer(indexerName),
-              _sourceType: "http",
-              _priorityIndexer: !!r._priorityIndexer,
-              behaviorHints: { filename: displayFileName, bingeGroup: `prowjack|qbit|${resolved.infoHash}`, notWebReady: false },
-            });
-            stQbAddedCount++;
-          }
-          console.log(`[QB] StremThru+debrid: ${stQbAddedCount}/${_stQbWithHashes.length} streams [QB] adicionados (modo=${prefs.qbitMode} slots=${stQbExtraSlotsNow})`);
+            sources: undefined, title: undefined, _filename: undefined,
+            _sourceType: "debrid", _stremThruProxy: true, _cached: true,
+          });
+        } else {
+          // StremThru Proxy não conseguiu cachear (ex: tracker privado ou não cacheado)
+          p2pStreams.push({ ...s, _sourceType: "p2p" });
         }
       }
 
-      // Ordena: debrid primeiro, depois P2P
+      // Adiciona os P2P brutos também (serão filtrados no final se enablePureP2P for false)
+      combined.push(...p2pStreams);
+
+      // 2) Tenta oferecer QBittorrent para os torrents não-cacheados
+      const qbitCreds = null; // No modo StremThru não temos credenciais por request
+      if (isQbitEnabledForPrefs(prefs, qbitCreds) && p2pStreams.length > 0) {
+        const qbitJobs = await Promise.all(p2pStreams.map(async s => {
+           const isPrivate = String(s.description || "").includes("Tracker Privado");
+           if (!shouldOfferQbitForResult(prefs, isPrivate, qbitCreds)) return null;
+           
+           const ihKey = String(s.infoHash || "").toLowerCase();
+           if (!ihKey) return null;
+           
+           const buf = await rc.getBuffer(`torrent:${ihKey}`).catch(() => null);
+           let torrentB64 = null;
+           if (buf) {
+             try { torrentB64 = injectTrackers(buf).toString("base64"); }
+             catch { torrentB64 = buf.toString("base64"); }
+           }
+           
+           if (!torrentB64 && isPrivate) return null; // Private tracker NEEDS buffer
+           
+           const magnet = buildMagnet(s.infoHash, null, "");
+           const jobToken = await saveQbitJob({
+             infoHash: s.infoHash,
+             link: null,
+             magnet,
+             fileIdx: null,
+             fileName: null,
+             torrentB64
+           });
+           
+           const resLabelMatch = String(s.name || "").split("\n").find(l => /[🔵🟢🟡⚪]/.test(l));
+           const qbitResLabel = resLabelMatch ? resLabelMatch.trim() : "Links";
+           
+           return {
+             name: `\n${addonName}\n⬇️ ${qbitResLabel} [QB]`,
+             description: String(s.description || ""),
+             url: `${getPublicBase(req)}/${req.params.userConfig}/qbit/${jobToken}`,
+             behaviorHints: { notWebReady: false, filename: s.behaviorHints?.filename, bingeGroup: `prowjack|qbit|${s.infoHash}` },
+             _sourceType: "http",
+             _cached: false,
+           };
+        }));
+        
+        combined.push(...qbitJobs.filter(Boolean));
+      }
+
+      // Ordena: debrid primeiro, depois P2P / QB
       combined.sort((a, b) => {
         const da = a._cached ? 0 : (a._sourceType === "debrid" ? 1 : 2);
         const db = b._cached ? 0 : (b._sourceType === "debrid" ? 1 : 2);

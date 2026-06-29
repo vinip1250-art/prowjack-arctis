@@ -97,9 +97,10 @@ router.get("/:userConfig/manifest.json", async (req, res) => {
 
   const types  = [...new Set((prefs.categories || ["movie","series"]).map(c => c==="movies"?"movie":c==="anime"?"series":c))];
   const name   = prefs.addonName || "ProwJack";
-  const isDebridActive = prefs.debrid && prefs.debridConfig &&
+  const isStremThruActive = !!(prefs.stConfig && Array.isArray(prefs.stConfig.stores) && prefs.stConfig.stores.length);
+  const isDebridActive = !isStremThruActive && prefs.debrid && prefs.debridConfig &&
     (prefs.debridConfig.torboxKey || prefs.debridConfig.rdKey);
-  const hasP2P = !isDebridActive && prefs.enableP2P !== false;
+  const hasP2P = !isStremThruActive && !isDebridActive && prefs.enableP2P !== false;
 
   const enabledCats = Array.isArray(prefs.categories) && prefs.categories.length ? prefs.categories : ["movie", "series"];
   const catalogs = [];

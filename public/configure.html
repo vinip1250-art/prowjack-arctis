@@ -377,7 +377,7 @@ hr{border:none;border-top:1px solid var(--bord);margin:14px 0}
         <hr/>
 
         <label style="display:flex;align-items:center;gap:9px;cursor:pointer;margin-bottom:10px">
-          <input type="checkbox" id="useStremThru" style="width:15px;height:15px;accent-color:var(--amber)" onchange="toggleDebridMode()"/>
+          <input type="checkbox" id="useStremThru" style="width:15px;height:15px;accent-color:var(--amber)" onchange="toggleDebridMode('st')"/>
           <span style="font-size:13px;font-weight:600">⚡ Proxy Debrid via StremThru <span style="font-size:11px;background:rgba(108,143,255,.18);color:#6c8fff;padding:2px 7px;border-radius:10px;margin-left:4px">Recomendado</span></span>
         </label>
         <div class="debrid-panel st-panel" id="stremThruConfig">
@@ -424,7 +424,7 @@ hr{border:none;border-top:1px solid var(--bord);margin:14px 0}
         </div>
 
         <label style="display:flex;align-items:center;gap:9px;cursor:pointer;margin-bottom:10px">
-          <input type="checkbox" id="useNativeDebrid" style="width:15px;height:15px;accent-color:var(--amber)" onchange="toggleDebridMode()"/>
+          <input type="checkbox" id="useNativeDebrid" style="width:15px;height:15px;accent-color:var(--amber)" onchange="toggleDebridMode('native')"/>
           <span style="font-size:13px;font-weight:500">Debrid Nativo (TorBox / Real-Debrid direto)</span>
         </label>
         <div class="debrid-panel tb-panel" id="nativeDebridConfig">
@@ -606,6 +606,9 @@ function applyPrefsToForm(prefs) {
     if (stores[0]) { document.getElementById('stStore1').value = stores[0].c || 'torbox'; document.getElementById('stToken1').value = stores[0].t || ''; }
     if (stores[1]) { document.getElementById('stStore2').value = stores[1].c || ''; document.getElementById('stToken2').value = stores[1].t || ''; }
   }
+  if (prefs.stConfig) {
+    document.getElementById('useNativeDebrid').checked = false;
+  }
   toggleDebridMode();
 }
 
@@ -625,9 +628,13 @@ function selectLang(el) {
 }
 
 // ── Debrid toggles ────────────────────────────────────────────────
-function toggleDebridMode() {
-  document.getElementById('nativeDebridConfig').style.display = document.getElementById('useNativeDebrid').checked ? 'block' : 'none';
-  document.getElementById('stremThruConfig').style.display    = document.getElementById('useStremThru').checked    ? 'block' : 'none';
+function toggleDebridMode(changed) {
+  const nativeEl = document.getElementById('useNativeDebrid');
+  const stEl = document.getElementById('useStremThru');
+  if (changed === 'st' && stEl.checked) nativeEl.checked = false;
+  if (changed === 'native' && nativeEl.checked) stEl.checked = false;
+  document.getElementById('nativeDebridConfig').style.display = nativeEl.checked ? 'block' : 'none';
+  document.getElementById('stremThruConfig').style.display    = stEl.checked    ? 'block' : 'none';
 }
 function toggleQbitMode() {
   document.getElementById('qbitModeConfig').style.display = document.getElementById('enableP2P').checked ? 'block' : 'none';
@@ -763,8 +770,8 @@ function filterIx(q) {
 
 // ── Build prefs ───────────────────────────────────────────────────
 function buildPrefs() {
-  const isNative   = document.getElementById('useNativeDebrid').checked;
   const isStremThru = document.getElementById('useStremThru').checked;
+  const isNative   = !isStremThru && document.getElementById('useNativeDebrid').checked;
   const accessToken = document.getElementById('accessToken').value.trim();
 
   const prefs = {

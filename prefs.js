@@ -137,6 +137,10 @@ function sanitizeUserPrefs(input = {}) {
     if (url && stores.length) {
       out.stConfig = { url, stores };
       out.debrid = true;
+      // StremThru and native debrid are mutually exclusive execution modes.
+      // If an old UI/config sends both, prefer ST and drop native keys so the
+      // stream route cannot mix native RD/TB cache checks with ST proxy output.
+      delete out.debridConfig;
       out.enableP2P = true;
       // We don't force qbitMode to 'private' here anymore. It remains whatever the user selected.
     }
@@ -164,6 +168,7 @@ function normalizePrefs(u = {}) {
 
   if (m.stConfig && Array.isArray(m.stConfig.stores) && m.stConfig.stores.length > 0) {
     m.debrid = true;
+    m.debridConfig = null;
   }
 
   if (m.addonName) m.addonName = m.addonName.replace(/\s*\[(TB\+RD|TB|RD|QB|PRO|ST)\]/gi, "").replace(/\bPRO\b/g, "").trim();
