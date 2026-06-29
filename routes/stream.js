@@ -67,10 +67,16 @@ router.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {
     const { userConfig, type, id } = req.params;
     // Carrega prefs mas força modo P2P puro (sem debrid/StremThru) para ser upstream
     const rawPrefs = await resolvePrefs(userConfig);
-      // StremThru proxy connections have strict 10s timeouts. Cap fast phase to ensure we return before timeout.
-      const stMax = 5500;
-      const stPref = Math.min((rawPrefs.slowThreshold || 5000), stMax);
-      const prefs = { ...rawPrefs, debrid: false, stConfig: null, enableP2P: true, slowThreshold: stPref, timeout: stPref };
+    // Internal ST upstream must wait the FULL available window so ALL indexers
+    // can respond — not just the fastest one.
+    //
+    // BUG 1 FIX: antes usávamos Math.min(rawPrefs.slowThreshold, internalMax), que limitava
+    // a fase rápida ao slowThreshold do usuário (padrão 8 s). Com 7+ indexers, a maioria
+    // respondia depois dos 8 s e a rota interna enviava 0–1 resultado ao StremThru.
+    // O slowThreshold do usuário controla o spinner de carregamento na rota PRINCIPAL;
+    // para o upstream interno devemos usar o tempo máximo que o proxy StremThru permite.
+    const internalMax = Math.min(20000, Math.max(8000, STREMTHRU_PROXY_TIMEOUT_MS - 5000));
+    const prefs = { ...rawPrefs, debrid: false, stConfig: null, enableP2P: true, slowThreshold: internalMax, timeout: internalMax };
     delete prefs.debridConfig;
     delete prefs.stConfig;
 
@@ -140,7 +146,14 @@ router.get("/internal/:userConfig/stream/:type/:id.json", async (req, res) => {
         const displayFileName = r._scrapStream?._filename || fallbackTitle;
         const filenameLine = displayFileName ? `📄 ${displayFileName}` : "";
         const isPrivateTracker = isPrivateTrackerCandidate(r, resolved);
-
+        // BUG 2 FIX: antes descartávamos trackers privados aqui com return null.
+        // Consequência: StremThru nunca os recebia, mesmo quando o torrent já estava
+        // em cache no debrid (caso em que o StremThru resolveria normalmente).
+        //
+        // Novo comportamento:
+        //   • Torrent privado EM CACHE no debrid → StremThru retorna URL → rota principal captura ✓
+        //   • Torrent privado NÃO em cache      → StremThru devolve P2P (sem URL)
+        //     → rota principal identifica pelo marcador "🔒 Tracker Privado" e cria job qBit ✓
 
         const streamObj = {
           name: `\n${addonName}\n${resLabel || "Links"}`,
@@ -192,8 +205,6 @@ if (resolved.infoHash) {
         streamObj.behaviorHints.bingeGroup = `prowjack|${resolved.infoHash}`;
 
 
-      } else if (resolved.url) {
-        streamObj.url = resolved.url;
       } else {
         return null;
       }
@@ -219,14 +230,14 @@ if (resolved.infoHash) {
 
 router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
   const prefs = await resolvePrefs(req.params.userConfig);
-  const isStremThruMode = !!prefs.stConfig;
+  const isStremThruMode = !!(prefs.stConfig && Array.isArray(prefs.stConfig.stores) && prefs.stConfig.stores.length);
   const qbitCreds = null;
   const qbitEnabledForPrefs = isQbitEnabledForPrefs(prefs, qbitCreds);
   const { type, id } = req.params;
   console.log(`\n=========================================`);
   console.log(`NOVA BUSCA: [${type}] ${id}`);
 
-  const isDebridMode = prefs.debrid && prefs.debridConfig &&
+  const isDebridMode = !isStremThruMode && prefs.debrid && prefs.debridConfig &&
     (prefs.debridConfig.torboxKey || prefs.debridConfig.rdKey);
 
   if (isDebridMode) {
@@ -297,136 +308,125 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
     if (type === "movie" && !enabledCats.includes("movie"))                      { releaseLock(); return res.json({ streams: [] }); }
 
     if (isStremThruMode) {
-      const stMax = 5500;
-      prefs.slowThreshold = Math.min((prefs.slowThreshold || 5000), stMax);
-      prefs.timeout = Math.min((prefs.timeout || 5000), stMax);
       const _stStart = Date.now();
       const maxOut = prefs.maxResults || 20;
       const proxyManifestUrl = buildStremThruProxyManifestUrl(req, prefs, req.params.userConfig);
       const addonName = prefs.addonName || "ProwJack";
-      // Roda StremThru (resolve debrid) e Jackett em PARALELO — igual ao IndexaBR
-      // StremThru chama /internal/:userConfig/stream que busca no Jackett e retorna P2P
-      // O StremThru então resolve os hashes P2P via debrid e retorna links diretos
-      const indexersForFallback = await resolveSearchIndexers(prefs, parsed.isAnime);
-      const fastPath = await getRssFastPathResults(parsed, prefs, type);
-      const fallbackPromise = fastPath ? Promise.resolve(fastPath) : jackettSearch({ parsed, queries, search }, indexersForFallback, prefs);
-      const [proxyStreams, jackettResults, scrapResultsRaw] = await Promise.all([
-          proxyManifestUrl
-            ? fetchScrapStreams(proxyManifestUrl, type, id, { timeout: STREMTHRU_PROXY_TIMEOUT_MS, label: "STREMTHRU", preserveBadges: true, prefs })
-            : Promise.resolve([]),
-          fallbackPromise,
-          ENV.scrapManifests && ENV.scrapManifests.length > 0
-            ? Promise.all(ENV.scrapManifests.map(async (m, idx) => {
-                const streams = await fetchScrapStreams(m, type, id, { prefs });
-                console.log(`[SCRAP ${idx}] ${m.slice(0, 60)}... → ${streams.length} streams`);
-                let scrapName = "Scrap Externo";
-                try {
-                  const host = new URL(m).hostname;
-                  const parts = host.split('.');
-                  let rawName = parts.length >= 2 ? (parts[0] === 'www' || parts[0] === 'api' ? parts[1] : parts[0]) : host;
-                  scrapName = rawName.charAt(0).toUpperCase() + rawName.slice(1);
-                } catch {}
-                return streams.map(s => ({ ...s, _scrapName: scrapName }));
-              }))
-            : Promise.resolve([])
-        ]);
-      if (jackettResults._incomplete) reqCtx.hasTimedOut = true;
+      // Fluxo ST puro:
+      // 1) ProwJack expõe /internal como upstream P2P.
+      // 2) StremThru Wrap consulta esse upstream e resolve via stores configurados.
+      // 3) ProwJack recebe apenas a resposta do Wrap, organiza e entrega ao Stremio.
+      const proxyStreams = proxyManifestUrl
+        ? await fetchScrapStreams(proxyManifestUrl, type, id, { timeout: STREMTHRU_PROXY_TIMEOUT_MS, label: "STREMTHRU", preserveBadges: true, prefs })
+        : [];
       console.log(`[PERF] stremthru=${Date.now() - _stStart}ms`);
-      console.log(`[STREMTHRU] ${proxyStreams.length} streams do proxy | ${jackettResults.length} do Jackett`);
+      console.log(`[STREMTHRU] ${proxyStreams.length} streams recebidos do Wrap`);
 
-      // Constrói streams finais combinando os dois resultados
+      // Constrói streams finais somente a partir do Wrap.
       const combined = [];
-      
-      const extScrapStreams = scrapResultsRaw.flat().map(s => {
-        const desc = [s.description || s.title || "", s._scrapName ? `🎥 ${s._scrapName}` : ""]
-          .filter(Boolean).join("\n");
-        return {
-          ...s,
-          description: desc,
-          _sourceType: "http",
-          _cached: true,
-          _priorityIndexer: true,
-        };
-      });
-      if (extScrapStreams.length) {
-        console.log(`[STREMTHRU] ${extScrapStreams.length} streams de addons externos adicionados`);
-        combined.push(...extScrapStreams);
-      }
 
       // Streams do StremThru: somente streams COM url = debrid efetivamente resolvido.
       // Quando StremThru não tem o torrent em cache, passa os streams P2P brutos do
-      // addon interno (infoHash/sources sem url). Esses NÃO são debrid — são descartados
-      // aqui para que o fallback on-demand abaixo os trate corretamente.
-      // 1) Processa streams devolvidos pelo StremThru Proxy
-      const p2pStreams = [];
-      for (const s of proxyStreams) {
-        if (s.url) {
+      // addon interno (infoHash/sources sem url). Esses NÃO são debrid — são descartados.
+      const stStreams = proxyStreams
+          .filter(s => !!s.url)
+          .filter(s => {
+             const isPrivate = String(s.description || "").includes("Tracker Privado");
+             const isUncached = String(s.name || "").includes("⬇️");
+             return !(isPrivate && isUncached);
+          })
+          .map(s => {
           let desc = s.description || s.title || "";
           const filename = s.behaviorHints?.filename;
-          if (filename && !desc.includes(filename)) desc += `\n📂 ${filename}`;
-          const cleanName = (s.name || "").split("\n").map(l => l.trim()).filter(Boolean).join("\n");
-          combined.push({
+          if (filename && !desc.includes(filename)) {
+            desc += `\n📂 ${filename}`;
+          }
+          const cleanName = (s.name || "")
+            .split("\n")
+            .map(l => l.trim())
+            .filter(Boolean)
+            .join("\n");
+          return {
             ...s,
             name: cleanName || s.name,
             description: desc.trim(),
-            sources: undefined, title: undefined, _filename: undefined,
-            _sourceType: "debrid", _stremThruProxy: true, _cached: true,
-          });
-        } else {
-          // StremThru Proxy não conseguiu cachear (ex: tracker privado ou não cacheado)
-          p2pStreams.push({ ...s, _sourceType: "p2p" });
+            sources: undefined,
+            title: undefined,
+            _filename: undefined,
+            _sourceType: "debrid",
+            _stremThruProxy: true,
+            _cached: true,
+          };
+        });
+      combined.push(...stStreams);
+
+      // [QB] no StremThru — abordagem correta:
+      // A rota interna já rodou jackettSearch e populou o cache Redis.
+      // A cache key não inclui debrid/stConfig, então as duas rotas compartilham a mesma
+      // entrada → esta chamada é um cache hit quase instantâneo.
+      // Filtramos private trackers, recuperamos o buffer .torrent do Redis (separado do
+      // cache JSON do jackettSearch, que não sobrevive à serialização de Buffer) e
+      // criamos os jobs qBit da mesma forma que o fluxo nativo faz.
+      if (qbitEnabledForPrefs) {
+        try {
+          const stIndexers = await resolveSearchIndexers(prefs, parsed.isAnime);
+          const allCachedResults = await jackettSearch({ parsed, queries, search }, stIndexers, prefs);
+
+          const privateResults = allCachedResults.filter(r =>
+            r._resolved?.infoHash && isPrivateTrackerCandidate(r, r._resolved)
+          );
+
+          if (privateResults.length > 0) {
+            console.log(`[QB/ST] ${privateResults.length} tracker(s) privado(s) no cache → criando jobs qBit`);
+
+            const qbitJobs = await Promise.all(
+              privateResults.slice(0, 5).map(async r => {
+                try {
+                  const ihKey = String(r._resolved.infoHash || "").toLowerCase();
+                  if (!ihKey) return null;
+
+                  // Buffer via Redis — o JSON do cache jackettSearch não preserva objetos Buffer
+                  const buf = await rc.getBuffer(`torrent:${ihKey}`).catch(() => null);
+                  if (!buf) return null;
+
+                  let torrentB64;
+                  try { torrentB64 = injectTrackers(buf).toString("base64"); }
+                  catch  { torrentB64 = buf.toString("base64"); }
+
+                  const magnet = buildMagnet(r._resolved.infoHash, null, "");
+                  const jobToken = await saveQbitJob({
+                    infoHash: r._resolved.infoHash,
+                    link:     (r.Link && !r.Link.startsWith("magnet:")) ? r.Link : null,
+                    magnet,
+                    fileIdx:  null,
+                    fileName: null,
+                    torrentB64,
+                  });
+
+                  const indexerName = r._indexerName || r.Tracker || r.TrackerId || "Unknown";
+                  const { resLabel } = formatStream(r, indexerName, parsed.isAnime, prefs, false, streamMeta);
+
+                  return {
+                    name:          `\n${addonName}\n⬇️ ${resLabel || "QB"} [QB]`,
+                    description:   String(r.Title || ""),
+                    url:           `${getPublicBase(req)}/${req.params.userConfig}/qbit/${jobToken}`,
+                    behaviorHints: { notWebReady: false },
+                    _sourceType:   "http",
+                    _cached:       false,
+                  };
+                } catch (e) {
+                  console.log(`[QB/ST] Erro no job qBit para ${r._resolved?.infoHash}: ${e.message}`);
+                  return null;
+                }
+              })
+            );
+
+            combined.push(...qbitJobs.filter(Boolean));
+          }
+        } catch (e) {
+          console.log(`[QB/ST] Erro ao buscar private trackers do cache: ${e.message}`);
         }
       }
-
-      // Adiciona os P2P brutos também (serão filtrados no final se enablePureP2P for false)
-      combined.push(...p2pStreams);
-
-      // 2) Tenta oferecer QBittorrent para os torrents não-cacheados
-      const qbitCreds = null; // No modo StremThru não temos credenciais por request
-      if (isQbitEnabledForPrefs(prefs, qbitCreds) && p2pStreams.length > 0) {
-        const qbitJobs = await Promise.all(p2pStreams.map(async s => {
-           const isPrivate = String(s.description || "").includes("Tracker Privado");
-           if (!shouldOfferQbitForResult(prefs, isPrivate, qbitCreds)) return null;
-           
-           const ihKey = String(s.infoHash || "").toLowerCase();
-           if (!ihKey) return null;
-           
-           const buf = await rc.getBuffer(`torrent:${ihKey}`).catch(() => null);
-           let torrentB64 = null;
-           if (buf) {
-             try { torrentB64 = injectTrackers(buf).toString("base64"); }
-             catch { torrentB64 = buf.toString("base64"); }
-           }
-           
-           if (!torrentB64 && isPrivate) return null; // Private tracker NEEDS buffer
-           
-           const magnet = buildMagnet(s.infoHash, null, "");
-           const jobToken = await saveQbitJob({
-             infoHash: s.infoHash,
-             link: null,
-             magnet,
-             fileIdx: null,
-             fileName: null,
-             torrentB64
-           });
-           
-           const resLabelMatch = String(s.name || "").split("\n").find(l => /[🔵🟢🟡⚪]/.test(l));
-           const qbitResLabel = resLabelMatch ? resLabelMatch.trim() : "Links";
-           
-           return {
-             name: `\n${addonName}\n⬇️ ${qbitResLabel} [QB]`,
-             description: String(s.description || ""),
-             url: `${getPublicBase(req)}/${req.params.userConfig}/qbit/${jobToken}`,
-             behaviorHints: { notWebReady: false, filename: s.behaviorHints?.filename, bingeGroup: `prowjack|qbit|${s.infoHash}` },
-             _sourceType: "http",
-             _cached: false,
-           };
-        }));
-        
-        combined.push(...qbitJobs.filter(Boolean));
-      }
-
-      // Ordena: debrid primeiro, depois P2P / QB
       combined.sort((a, b) => {
         const da = a._cached ? 0 : (a._sourceType === "debrid" ? 1 : 2);
         const db = b._cached ? 0 : (b._sourceType === "debrid" ? 1 : 2);
@@ -436,26 +436,7 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
         return 0;
       });
 
-      const isQbStream = s => s?._sourceType === "http" && typeof s.url === "string" && s.url.includes("/qbit/");
-      let normalPool = combined.filter(s => !isQbStream(s));
-      const limitedNormal = normalPool.slice(0, maxOut);
-      
-      const stQbExtraSlots = prefs.qbExtraSlots ?? QB_EXTRA_SLOTS;
-      const qbExtra = combined
-        .filter(isQbStream)
-        .sort((a, b) => {
-          const seedA = (a._seeders || a.Seeders || 0);
-          const seedB = (b._seeders || b.Seeders || 0);
-          if (seedB !== seedA) return seedB - seedA;
-          const sizeA = (a._sizeGb || a.Size || 0);
-          const sizeB = (b._sizeGb || b.Size || 0);
-          return sizeB - sizeA;
-        })
-        .slice(0, stQbExtraSlots);
-      if (qbExtra.length) console.log(`[QB] ${qbExtra.length} streams [QB] adicionados no modo StremThru (QB_EXTRA_SLOTS=${stQbExtraSlots})`);
-
-      const finalStreamsCombined = [...limitedNormal, ...qbExtra];
-      const qbitCount = finalStreamsCombined.filter(isQbStream).length;
+      const finalStreamsCombined = combined.slice(0, maxOut);
 
       // Remove campos internos antes de enviar ao Stremio
       const isStremThruProxyClient = /stremthru|go-http-client/i.test(req.headers["user-agent"] || "");
@@ -484,11 +465,6 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
         console.log(`=========================================
 `);
       releaseLock(finalStreams);
-
-      // Inicia resolução em background para popular o cache para a próxima busca
-      // sem abrir dezenas de downloads .torrent simultâneos no Prowlarr/tracker.
-      const queued = infoHashQueue.enqueueMany(jackettResults, 40);
-      if (queued) console.log(`[InfoHashQueue] ${queued} itens enfileirados pelo fallback StremThru`);
 
       return res.json({ streams: finalStreams });
     }
@@ -1493,4 +1469,3 @@ router.get("/:userConfig/stream/:type/:id.json", async (req, res) => {
 });
 
 module.exports = router;
-
